@@ -10,7 +10,10 @@ function compute({ players, winner, okeyFinish, pairFinish, okey, partners }) {
     const deltas = [0, 0, 0, 0];
     for (let i = 0; i < 4; i++) {
         const p = players[i];
-        const handPts = p.opened ? R.handPenalty(p.hand, okey) : UNOPENED_PENALTY;
+        let handPts;
+        if (!p.opened) handPts = UNOPENED_PENALTY;
+        else if (p.openType === 'pairs') handPts = R.handPenalty(p.hand, okey) * 2; // çift açana 2 kat
+        else handPts = R.handPenalty(p.hand, okey);
         if (winner === null) deltas[i] = handPts;
         else if (i === winner) deltas[i] = -WINNER_REWARD * mult;
         else if (partners && i === (winner + 2) % 4) deltas[i] = 0;

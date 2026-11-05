@@ -113,12 +113,26 @@ function analyzeGroup(tiles, okey) {
 }
 
 /** Çift: birbirinin aynısı iki taş. Okey bir taşın yerine geçebilir. */
-function analyzePair(tiles, okey) {
+function analyzePair(tiles, okey, indicatorId = null) {
     if (tiles.length !== 2) return null;
-    const s0 = slotOf(okey, tiles[0]);
-    const s1 = slotOf(okey, tiles[1]);
+    const isPairWild = (id) =>
+      isWild(okey, id) ||
+      (indicatorId !== null &&
+        !isFake(id) &&
+        !isFake(indicatorId) &&
+        colorOf(id) === colorOf(indicatorId) &&
+        numberOf(id) === numberOf(indicatorId));
+    const wild0 = isPairWild(tiles[0]);
+    const wild1 = isPairWild(tiles[1]);
+    const s0 = wild0 ? null : slotOf(okey, tiles[0]);
+    const s1 = wild1 ? null : slotOf(okey, tiles[1]);
     let sl;
-    if (s0 === null && s1 === null) sl = slot(okey.color, okey.number);
+    if (s0 === null && s1 === null) {
+      sl =
+        wild0 && !isWild(okey, tiles[0])
+          ? slot(colorOf(indicatorId), numberOf(indicatorId))
+          : slot(okey.color, okey.number);
+    }
     else if (s0 === null) sl = s1;
     else if (s1 === null) sl = s0;
     else if (s0.color === s1.color && s0.number === s1.number) sl = s0;
