@@ -41,6 +41,7 @@ class Game {
         this.deck = [];
         this.indicator = null;
         this.pendingIndicator = null;
+        this.indicatorShownBy = null;
         this.okey = null;
         this.discards = [[], [], [], []];
         this.melds = [];
@@ -144,6 +145,7 @@ class Game {
         this.maxSeriesOpen = 0;
         this.maxPairOpen = 0;
         this.indicator = null;
+        this.indicatorShownBy = null;
         this.okey = null;
         this.lastResult = null;
         this.lastDrawn = null;
@@ -161,6 +163,30 @@ class Game {
             `El ${this.round}/${this.totalRounds()} başladı. ${this.players[this.starter].name} başlıyor.`
         );
         if (!this.settings.indicatorRule) this.confirmIndicator();
+    }
+
+    /** Oyuncunun elindeki gösterge taşını açılış aşamasında göstermesi. */
+    showIndicator(p, tile) {
+        if (!Number.isInteger(p) || p < 0 || p >= this.players.length) {
+            return fail('Geçersiz oyuncu.');
+        }
+        if (this.phase !== 'indicator' || this.pendingIndicator === null) {
+            return fail('Gösterge aşaması sona erdi.');
+        }
+        if (this.indicatorShownBy !== null) {
+            return fail('Gösterge zaten gösterildi.');
+        }
+        if (
+            !this.players[p].hand.includes(tile) ||
+            R.isFake(tile) ||
+            R.colorOf(tile) !== R.colorOf(this.pendingIndicator) ||
+            R.numberOf(tile) !== R.numberOf(this.pendingIndicator)
+        ) {
+            return fail('Elinde gösterge taşı yok.');
+        }
+        this.indicatorShownBy = p;
+        this.say(`${this.players[p].name} göstergeyi gösterdi.`);
+        return ok('Gösterge gösterildi.');
     }
 
     /** Gösterge aşaması bittiğinde (taş bırakıldı veya süre doldu). */
@@ -439,6 +465,7 @@ class Game {
             starter: this.starter,
             indicator: this.indicator,
             pendingIndicator: this.phase === 'indicator' ? this.pendingIndicator : null,
+            indicatorShownBy: this.indicatorShownBy,
             okey: this.okey ? { color: this.okey.color, number: this.okey.number } : null,
             deckCount: this.deck.length,
             discards: this.discards.map((d) => [...d]),

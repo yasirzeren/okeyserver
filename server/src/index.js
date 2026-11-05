@@ -62,6 +62,7 @@ io.on('connection', (socket) => {
     on('open_groups', (d) => manager.openGroups(socket, d));
     on('process_tile', (d) => manager.processTile(socket, d));
     on('discard', (d) => manager.discard(socket, d));
+    on('show_indicator', (d) => manager.showIndicator(socket, d));
     on('place_indicator', () => manager.placeIndicator(socket));
     on('ready_next', () => manager.readyNext(socket));
 

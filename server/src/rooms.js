@@ -687,6 +687,12 @@ class RoomManager {
         return this.act(socket, (g, s) => g.discard(s, tile));
     }
 
+    showIndicator(socket, d) {
+        const tile = parseTile(d.tile);
+        if (tile === null) return fail('Geçersiz istek.');
+        return this.act(socket, (g, s) => g.showIndicator(s, tile));
+    }
+
     placeIndicator(socket) {
         return this.act(socket, (g, s) => {
             if (g.phase !== 'indicator') return fail('Gösterge aşaması bitti.');

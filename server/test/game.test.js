@@ -317,3 +317,24 @@ test('gösterge kuralı açıkken aşama beklenir ve onaylanınca oyun başlar',
     assert.strictEqual(g.phase, 'playing');
     assert.ok(g.okey);
 });
+
+test('gösterge taşı olan oyuncu taşı tüketmeden gösterebilir', () => {
+    const g = new Game({ ...baseSettings, indicatorRule: true }, seats);
+    g.startRound();
+    const indicator = t(1, 7);
+    const heldTile = t(1, 7, 1);
+    g.pendingIndicator = indicator;
+    g.players[2].hand = [heldTile];
+
+    assert.strictEqual(g.showIndicator(2, heldTile).ok, true);
+    assert.strictEqual(g.indicatorShownBy, 2);
+    assert.deepStrictEqual(g.players[2].hand, [heldTile]);
+    assert.strictEqual(g.phase, 'indicator');
+    assert.strictEqual(g.showIndicator(2, heldTile).ok, false);
+    assert.strictEqual(g.showIndicator(1, heldTile).ok, false);
+    assert.strictEqual(g.showIndicator(2, 104).ok, false);
+
+    const view = g.viewFor(2);
+    assert.strictEqual(view.indicatorShownBy, 2);
+    assert.strictEqual(view.players[0].hand, undefined);
+});

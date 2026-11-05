@@ -94,6 +94,33 @@ test('durum senkronu: her oyuncu yalnızca kendi elini alır, süre bilgisi geli
     clearInterval(mgr.sweeper);
 });
 
+test('gösterge sunumu sahibinden doğrulanır ve odadaki oyunculara bildirilir', () => {
+    const { io, mgr } = setup();
+    const { a, b, room } = startedRoom(mgr, { indicatorRule: true });
+    const g = room.game;
+    const indicator = 5;
+    const heldTile = 18;
+    g.pendingIndicator = indicator;
+    g.players[0].hand = [heldTile];
+    g.players[1].hand = [];
+
+    assert.strictEqual(mgr.showIndicator(b, { tile: heldTile }).ok, false);
+    assert.strictEqual(mgr.showIndicator(a, { tile: 106 }).ok, false);
+    assert.strictEqual(mgr.showIndicator(a, { tile: heldTile }).ok, true);
+    assert.strictEqual(g.indicatorShownBy, 0);
+    assert.deepStrictEqual(g.players[0].hand, [heldTile]);
+    assert.strictEqual(g.phase, 'indicator');
+
+    const states = io.sent.filter((e) => e.ev === 'state');
+    const stateA = states.filter((e) => e.id === 'a').pop().data;
+    const stateB = states.filter((e) => e.id === 'b').pop().data;
+    assert.strictEqual(stateA.indicatorShownBy, 0);
+    assert.strictEqual(stateB.indicatorShownBy, 0);
+    assert.strictEqual(stateB.players[0].hand, undefined);
+    room.clearTimer();
+    clearInterval(mgr.sweeper);
+});
+
 test('sırası gelmeyen oyuncunun hamlesi sunucuda reddedilir', () => {
     const { mgr } = setup();
     const { a, b, room } = startedRoom(mgr);
