@@ -13,7 +13,7 @@ const credentials = (n) => ({
   name: `Oyuncu ${n}`,
 });
 
-test('account balance survives restart and pending entries are refunded once', () => {
+test('account balance survives restart and pending entries are refunded once', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'bunny-wallet-'));
   const path = join(dir, 'wallet.sqlite');
   let wallet = new Wallet(path);
@@ -43,28 +43,28 @@ test('account balance survives restart and pending entries are refunded once', (
   }
 });
 
-test('paid rooms require four accounts, debit once, and split team winnings', () => {
+test('paid rooms require four accounts, debit once, and split team winnings', async () => {
   const wallet = new Wallet(':memory:');
   const manager = new RoomManager({ to: () => ({ emit() {} }) }, wallet);
   try {
     const sockets = [0, 1, 2, 3].map((i) => ({ id: String(i), data: {} }));
     const users = sockets.map((_, i) => wallet.register(credentials(i)));
     const settings = { partners: true, indicatorRule: false, totalRounds: 1 };
-    assert.equal(manager.createRoom(sockets[0], { carrotEntry: true }).ok, false);
-    const created = manager.createRoom(sockets[0], {
+    assert.equal((await manager.createRoom(sockets[0], { carrotEntry: true })).ok, false);
+    const created = await manager.createRoom(sockets[0], {
       carrotEntry: true, accountToken: users[0].token, settings,
     });
     const room = manager.rooms.get(created.code);
-    assert.equal(manager.startGame(sockets[0]).ok, false);
-    assert.equal(manager.joinRoom(sockets[1], { code: created.code, accountToken: users[0].token }).ok, false);
+    assert.equal((await manager.startGame(sockets[0])).ok, false);
+    assert.equal((await manager.joinRoom(sockets[1], { code: created.code, accountToken: users[0].token })).ok, false);
     for (let i = 1; i < 4; i++) {
-      assert.equal(manager.joinRoom(sockets[i], { code: created.code, accountToken: users[i].token }).ok, true);
+      assert.equal((await manager.joinRoom(sockets[i], { code: created.code, accountToken: users[i].token })).ok, true);
       manager.setReady(sockets[i], { ready: true });
     }
     const balances = () => users.map((u) => wallet.profile(u.profile.id).carrots);
     assert.deepEqual(balances(), [1000, 1000, 1000, 1000]);
-    assert.equal(manager.startGame(sockets[0]).ok, true);
-    assert.equal(manager.startGame(sockets[0]).ok, false);
+    assert.equal((await manager.startGame(sockets[0])).ok, true);
+    assert.equal((await manager.startGame(sockets[0])).ok, false);
     assert.deepEqual(balances(), [900, 900, 900, 900]);
     room.game.phase = 'finished';
     [10, 50, 10, 50].forEach((score, seat) => { room.game.players[seat].score = score; });
@@ -79,7 +79,7 @@ test('paid rooms require four accounts, debit once, and split team winnings', ()
   }
 });
 
-test('admin adjustment requires a role, records the actor, and is applied once', () => {
+test('admin adjustment requires a role, records the actor, and is applied once', async () => {
   const wallet = new Wallet(':memory:');
   try {
     const admin = wallet.register(credentials(0));

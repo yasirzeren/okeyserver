@@ -2,8 +2,7 @@
 const http = require('http');
 const { Server } = require('socket.io');
 const { RoomManager } = require('./rooms');
-const { Wallet } = require('./wallet');
-const { join } = require('node:path');
+const { createWallet } = require('./wallet_backend');
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -21,11 +20,9 @@ const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 1e5,
 });
-const wallet = process.env.RENDER && !process.env.BUNNY_DB_PATH
-  ? null
-  : new Wallet(process.env.BUNNY_DB_PATH || join(__dirname, '..', 'data', 'bunny.sqlite'));
 const walletUnavailable = { ok: false, message: 'Hesap servisi henüz yapılandırılmadı.' };
-const manager = new RoomManager(io, wallet);
+let wallet;
+let manager;
 const authAttempts = new Map();
 const clearAttempts = setInterval(() => authAttempts.clear(), 60000);
 clearAttempts.unref();
@@ -53,12 +50,12 @@ io.on('connection', (socket) => {
   };
 
   const on = (event, handler) => {
-    socket.on(event, (data, ack) => {
+    socket.on(event, async (data, ack) => {
       const reply = typeof ack === 'function' ? ack : () => {};
       if (!allow()) return reply({ ok: false, message: 'Çok hızlı işlem yapıyorsun.' });
       try {
         const body = data && typeof data === 'object' ? data : {};
-        reply(handler(body) || { ok: true, message: '' });
+        reply((await handler(body)) || { ok: true, message: '' });
       } catch (e) {
         console.error(`'${event}' işlenirken hata:`, e);
         reply({ ok: false, message: 'Sunucu hatası.' });
@@ -102,6 +99,16 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => manager.onDisconnect(socket));
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Bunny 101 sunucusu ${PORT} portunda çalışıyor.`);
+async function start() {
+  wallet = await createWallet();
+  manager = new RoomManager(io, wallet);
+  await manager.maintainWallet();
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Bunny 101 sunucusu ${PORT} portunda çalışıyor.`);
+  });
+}
+
+start().catch((error) => {
+  console.error('Bunny 101 başlatılamadı:', error.code || error.name);
+  process.exit(1);
 });

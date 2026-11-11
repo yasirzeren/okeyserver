@@ -181,7 +181,7 @@ class Room {
         ? totals.map((score, seat) => score + totals[(seat + 2) % 4])
         : totals;
       const best = Math.min(...scores);
-      this.manager.wallet.settle(this.walletMatch,
+      this.manager.settleWallet(this.walletMatch,
         scores.flatMap((score, seat) => score === best ? [seat] : []));
       this.walletMatch = null;
     }
@@ -220,8 +220,8 @@ class Room {
     return m;
   }
 
-  startGame(member) {
-    if (this.started) return fail('Oyun zaten başladı.');
+  async startGame(member) {
+    if (this.started || this.starting) return fail('Oyun zaten başlatılıyor veya başladı.');
     if (member.seat !== this.hostSeat) return fail('Oyunu yalnızca oda sahibi başlatabilir.');
     const waiting = this.humans().filter((m) => m.seat !== this.hostSeat && !m.ready);
     if (waiting.length) return fail('Tüm oyuncular hazır olmalı.');
@@ -230,8 +230,25 @@ class Room {
         return fail('Havuçlu maç için dört oyuncu bağlı olmalı.');
       }
       const matchId = crypto.randomUUID();
-      const entry = this.manager.wallet.hold(matchId, this.members.map((m) => m.accountId));
+      const roster = [...this.members];
+      this.starting = true;
+      let entry;
+      try {
+        entry = await this.manager.wallet.hold(matchId, roster.map((m) => m.accountId));
+      } catch (error) {
+        // A failed acknowledgement can follow a committed transaction.
+        this.manager.settleWallet(matchId);
+        throw error;
+      } finally {
+        this.starting = false;
+      }
       if (!entry.ok) return entry;
+      if (this.closed || this.hostSeat !== member.seat ||
+          roster.some((m, i) => m !== this.members[i] || !m.connected ||
+            (m.seat !== this.hostSeat && !m.ready))) {
+        this.manager.settleWallet(matchId);
+        return fail('Oyuncu durumu değişti. Giriş ücretleri iade edilir.');
+      }
       this.walletMatch = matchId;
     }
     const used = new Set(this.members.filter(Boolean).map((m) => m.name.toLowerCase()));
@@ -259,7 +276,7 @@ class Room {
     try {
       this.game.startRound();
     } catch (error) {
-      if (this.walletMatch) this.manager.wallet.settle(this.walletMatch);
+      if (this.walletMatch) this.manager.settleWallet(this.walletMatch);
       this.walletMatch = null;
       this.game = null;
       this.started = false;
@@ -452,6 +469,8 @@ class RoomManager {
   constructor(io, wallet = null) {
     this.io = io;
     this.wallet = wallet;
+    this.walletSettlements = new Map();
+    this.walletMaintenance = false;
     this.rooms = new Map();
     this.sessions = new Map(); // token -> {code, seat}
     this.sweeper = setInterval(() => this.sweep(), 60000);
@@ -483,6 +502,47 @@ class RoomManager {
     return { room, member };
   }
 
+  settleWallet(id, winners = []) {
+    if (this.walletSettlements.has(id)) return;
+    const entry = { winners, running: false };
+    this.walletSettlements.set(id, entry);
+    this.tryWalletSettlement(id, entry);
+  }
+
+  async tryWalletSettlement(id, entry) {
+    if (entry.running) return;
+    entry.running = true;
+    try {
+      await this.wallet.settle(id, entry.winners);
+      this.walletSettlements.delete(id);
+    } catch (error) {
+      console.error('Wallet settlement:', error.code || error.name);
+    } finally {
+      entry.running = false;
+    }
+  }
+
+  async maintainWallet() {
+    if (this.walletMaintenance) return;
+    this.walletMaintenance = true;
+    try {
+      if (this.wallet?.maintain) {
+        const active = [...this.rooms.values()].map((r) => r.walletMatch).filter(Boolean);
+        await this.wallet.maintain([...active, ...this.walletSettlements.keys()]);
+      }
+      for (const [id, entry] of this.walletSettlements) await this.tryWalletSettlement(id, entry);
+    } catch (error) {
+      console.error('Wallet maintenance:', error.code || error.name);
+    } finally {
+      this.walletMaintenance = false;
+    }
+  }
+
+  async accountFor(token) {
+    const id = await this.wallet?.authenticate(token);
+    return id ? this.wallet.profile(id) : null;
+  }
+
   // ------------------------------------------------------------------ lobi
   listRooms() {
     return ok('', { rooms: [...this.rooms.values()]
@@ -494,14 +554,18 @@ class RoomManager {
         ...(r.carrotEntry ? { carrotEntry: 100 } : {}) })) });
   }
 
-  createRoom(socket, d) {
+  async createRoom(socket, d) {
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
-    const accountId = this.wallet?.authenticate(d.accountToken) ?? null;
+    const account = await this.accountFor(d.accountToken);
+    const accountId = account?.id ?? null;
+    if (socket.connected === false) return fail('Bağlantı koptu.');
+    if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     const paid = d.carrotEntry === true;
+    if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
     if (paid && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
-    if (paid && this.wallet.profile(accountId).carrots < 100) return fail('En az 100 havucun olmalı.');
-    const name = accountId ? this.wallet.profile(accountId).name : cleanName(d.playerName, 14, 'Oyuncu');
+    if (paid && account.carrots < 100) return fail('En az 100 havucun olmalı.');
+    const name = accountId ? account.name : cleanName(d.playerName, 14, 'Oyuncu');
     const roomName = cleanName(d.roomName, 24, 'Oda');
     const room = new Room(this, this.newCode(), roomName, normalizeSettings(d.settings));
     const token = this.newToken();
@@ -515,20 +579,24 @@ class RoomManager {
     return ok('Oda kuruldu.', { token, code: room.code, seat: m.seat });
   }
 
-  joinRoom(socket, d) {
+  async joinRoom(socket, d) {
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     const code = cleanText(d.code).toUpperCase();
     const room = this.rooms.get(code);
     if (!room) return fail('Oda bulunamadı.');
     if (room.started) return fail('Oyun başlamış, odaya katılamazsın.');
     const token = this.newToken();
-    const accountId = this.wallet?.authenticate(d.accountToken) ?? null;
+    const account = await this.accountFor(d.accountToken);
+    const accountId = account?.id ?? null;
+    if (socket.connected === false) return fail('Bağlantı koptu.');
+    if (this.ctx(socket)) return fail('Zaten bir odadasın.');
+    if (room.closed || room.started || room.starting) return fail('Oda artık katılıma açık değil.');
     if (room.carrotEntry && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
-    if (room.carrotEntry && this.wallet.profile(accountId).carrots < 100) return fail('En az 100 havucun olmalı.');
+    if (room.carrotEntry && account.carrots < 100) return fail('En az 100 havucun olmalı.');
     if (room.carrotEntry && room.humans().some((m) => m.accountId === accountId)) {
       return fail('Bu hesap zaten odada.');
     }
-    const name = accountId ? this.wallet.profile(accountId).name : cleanName(d.playerName, 14, 'Oyuncu');
+    const name = accountId ? account.name : cleanName(d.playerName, 14, 'Oyuncu');
     const m = room.addHuman(token, name, socket.id, accountId);
     if (!m) return fail('Oda dolu.');
     this.sessions.set(token, { code: room.code, seat: m.seat });
@@ -539,7 +607,7 @@ class RoomManager {
     return ok('Odaya girildi.', { token, code: room.code, seat: m.seat });
   }
 
-  resume(socket, d) {
+  async resume(socket, d) {
     const token = typeof d.token === 'string' ? d.token : '';
     const current = this.ctx(socket);
     if (current) {
@@ -552,8 +620,13 @@ class RoomManager {
     if (!s || !room || !m || m.token !== token) {
       return fail('Oturum bulunamadı (oda kapanmış veya sunucu yeniden başlamış olabilir).');
     }
-    if (room.carrotEntry && this.wallet.authenticate(d.accountToken) !== m.accountId) {
-      return fail('Bu odaya dönmek için aynı hesaba giriş yap.');
+    if (room.carrotEntry) {
+      const accountId = await this.wallet.authenticate(d.accountToken);
+      if (accountId !== m.accountId) return fail('Bu odaya dönmek için aynı hesaba giriş yap.');
+      if (socket.connected === false || room.closed || room.members[s.seat] !== m ||
+          m.token !== token || this.ctx(socket)) {
+        return fail('Oturum artık geçerli değil.');
+      }
     }
     if (m.graceTimer) {
       clearTimeout(m.graceTimer);
@@ -666,7 +739,7 @@ class RoomManager {
   closeRoom(room, reason) {
     if (room.closed) return;
     if (room.walletMatch) {
-      this.wallet.settle(room.walletMatch);
+      this.settleWallet(room.walletMatch);
       room.walletMatch = null;
     }
     room.closed = true;
@@ -680,6 +753,7 @@ class RoomManager {
   }
 
   sweep() {
+    void this.maintainWallet();
     const now = Date.now();
     for (const room of [...this.rooms.values()]) {
       if (room.connectedHumans().length === 0 && now - room.lastActive > IDLE_CLOSE_MS) {
