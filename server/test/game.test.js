@@ -115,16 +115,42 @@ test('çift doğrulama', () => {
   assert.ok(R.analyzePair([t(0, 5), t(2, 9)], okey));
 });
 
-test('gösterge, çift açarken okey gibi kullanılır', () => {
+test('göstergeyi göstermeyen oyuncu çiftte joker kullanamaz', () => {
   const g = newGame();
   g.indicator = t(3, 5);
   const indicatorPair = [t(0, 8), g.indicator];
-  assert.ok(R.analyzePair(indicatorPair, g.okey, g.indicator));
 
-  g.players[0].hand = [...pairs(4).flat(), ...indicatorPair];
+  g.players[0].hand = [...pairs(4).flat(), ...indicatorPair, t(3, 2)];
   const result = g.openGroups(0, [...pairs(4), indicatorPair]);
-  assert.strictEqual(result.ok, true, result.message);
+  assert.strictEqual(result.ok, false);
+
+  g.indicatorShownBy = 0;
+  const shownResult = g.openGroups(0, [...pairs(4), indicatorPair]);
+  assert.strictEqual(shownResult.ok, true, shownResult.message);
   assert.strictEqual(g.players[0].pairCount, 5);
+
+  const other = newGame();
+  other.indicator = t(3, 5);
+  other.indicatorShownBy = 0;
+  other.players[1].hand = [...pairs(4).flat(), ...indicatorPair, t(3, 2)];
+  const otherResult = other.openGroups(1, [...pairs(4), indicatorPair]);
+  assert.strictEqual(otherResult.ok, false);
+});
+
+test('göstergeyi göstermeyen oyuncu çift işleyemez', () => {
+  const g = newGame();
+  g.indicator = t(3, 5);
+  g.current = 0;
+  g.step = 'play';
+  g.players[0].opened = true;
+  g.players[0].openType = 'series';
+  g.players[0].hand = [t(0, 8), g.indicator, t(3, 2)];
+  g.players[1].opened = true;
+  g.players[1].openType = 'pairs';
+
+  assert.strictEqual(g.processPair(0, t(0, 8), g.indicator, 1).ok, false);
+  g.indicatorShownBy = 0;
+  assert.strictEqual(g.processPair(0, t(0, 8), g.indicator, 1).ok, true);
 });
 
 test('katlama eşiği', () => {
@@ -201,6 +227,72 @@ test('101 üstü açılış (+20 sn), geçerli ve geçersiz taş işleme', () =>
   assert.strictEqual(g.processTile(0, t(0, 9), red.id).ok, true);
   assert.strictEqual(g.players[0].processedCount, 1);
   assert.strictEqual(g.processTile(0, t(0, 3), red.id).ok, false);
+});
+
+test('bitiş için son taş per olarak işlenmeden atılmalıdır', () => {
+  const g = newGame();
+  const meld = meldOf(g, 50, 1, [t(0, 10), t(0, 11), t(0, 12)]);
+  g.players[0].opened = true;
+  g.players[0].openType = 'series';
+  g.players[0].hand = [t(0, 9)];
+
+  assert.strictEqual(g.processTile(0, t(0, 9), meld.id).ok, false);
+  assert.deepStrictEqual(g.players[0].hand, [t(0, 9)]);
+  assert.strictEqual(g.phase, 'playing');
+
+  g.players[0].hand.push(t(3, 2));
+  assert.strictEqual(g.processTile(0, t(0, 9), meld.id).ok, true);
+  assert.deepStrictEqual(g.players[0].hand, [t(3, 2)]);
+  assert.strictEqual(g.phase, 'playing');
+  assert.strictEqual(g.discard(0, t(3, 2)).ok, true);
+  assert.strictEqual(g.phase, 'finished');
+});
+
+test('otomatik işleme bitiş taşını elde bırakır', () => {
+  const g = newGame();
+  const meld = meldOf(g, 50, 1, [t(0, 10), t(0, 11), t(0, 12), t(0, 13)]);
+  g.players[0].opened = true;
+  g.players[0].openType = 'series';
+  g.players[0].hand = [t(0, 9), t(0, 8), t(3, 2)];
+
+  assert.strictEqual(g.autoProcess(0).ok, true);
+  assert.deepStrictEqual(g.players[0].hand, [t(3, 2)]);
+  assert.strictEqual(g.phase, 'playing');
+  assert.strictEqual(g.discard(0, t(3, 2)).ok, true);
+  assert.strictEqual(g.phase, 'finished');
+});
+
+test('çift işleme son taşı bırakır, ardından atışla bitilir', () => {
+  const g = newGame();
+  g.players[0].opened = true;
+  g.players[0].openType = 'series';
+  g.players[0].hand = [t(0, 5), t(0, 5, 1)];
+  g.players[1].opened = true;
+  g.players[1].openType = 'pairs';
+
+  assert.strictEqual(g.processPair(0, t(0, 5), t(0, 5, 1), 1).ok, false);
+  g.players[0].hand.push(t(3, 2));
+  assert.strictEqual(g.processPair(0, t(0, 5), t(0, 5, 1), 1).ok, true);
+  assert.deepStrictEqual(g.players[0].hand, [t(3, 2)]);
+  assert.strictEqual(g.phase, 'playing');
+  assert.strictEqual(g.discard(0, t(3, 2)).ok, true);
+  assert.strictEqual(g.phase, 'finished');
+});
+
+test('bütün perler açılınca bir taş atmak için elde bırakılmalıdır', () => {
+  const g = newGame();
+  g.players[0].hand = openGroups().flat();
+
+  assert.strictEqual(g.openGroups(0, openGroups()).ok, false);
+  assert.strictEqual(g.players[0].hand.length, 11);
+  assert.strictEqual(g.phase, 'playing');
+
+  g.players[0].hand.push(t(3, 2));
+  assert.strictEqual(g.openGroups(0, openGroups()).ok, true);
+  assert.deepStrictEqual(g.players[0].hand, [t(3, 2)]);
+  assert.strictEqual(g.phase, 'playing');
+  assert.strictEqual(g.discard(0, t(3, 2)).ok, true);
+  assert.strictEqual(g.phase, 'finished');
 });
 
 test('Eli Topla sonrası yeniden açarsa ceza almaz, vazgeçip taş atarsa ceza alır', () => {
@@ -307,6 +399,44 @@ test('okey alma: uyan taş okeyi alır, uymayan reddedilir, geri alınır', () =
   assert.strictEqual(g.gatherTiles(0).ok, true);
   assert.strictEqual(m.tiles[1], t(2, 9));
   assert.ok(g.players[0].hand.includes(t(0, 11)));
+});
+
+test('set perindeki okey, dördüncü taş eklenmeden alınamaz', () => {
+  const g = newGame();
+  const m = meldOf(g, 53, 1, [t(0, 12), t(1, 12), t(2, 9)]);
+  g.current = 0;
+  g.step = 'play';
+  g.players[0].opened = true;
+  g.players[0].openType = 'series';
+  g.players[0].hand = [t(3, 12), t(2, 12), t(3, 5)];
+
+  assert.strictEqual(g.swapOkey(0, t(2, 12), m.id, 2).ok, false);
+  assert.strictEqual(g.processTile(0, t(3, 12), m.id).ok, true);
+  assert.strictEqual(g.swapOkey(0, t(2, 12), m.id, 2).ok, true);
+  assert.ok(m.tiles.includes(t(3, 12)));
+  assert.ok(g.players[0].hand.includes(t(2, 9)));
+});
+
+test('13 grubunda joker rengi mavi 13 işlenince değişir ve geri alınır', () => {
+  const g = newGame();
+  const joker = t(2, 9);
+  const blue = t(1, 13);
+  const redCopy = t(0, 13, 1);
+  const m = meldOf(g, 54, 1, [t(2, 13), t(0, 13), joker]);
+  g.current = 0;
+  g.step = 'play';
+  g.players[0].opened = true;
+  g.players[0].openType = 'series';
+  g.players[0].hand = [blue, redCopy, t(3, 13), t(3, 5)];
+  assert.strictEqual(g.processTile(0, redCopy, m.id).ok, false);
+  assert.strictEqual(g.processTile(0, blue, m.id).ok, true);
+  assert.strictEqual(m.slots[m.tiles.indexOf(joker)].color, 3);
+  assert.ok(m.tiles.includes(blue));
+  assert.strictEqual(g.gatherTiles(0).ok, true);
+  assert.strictEqual(m.slots[m.tiles.indexOf(joker)].color, 1);
+  assert.ok(g.players[0].hand.includes(blue));
+  assert.strictEqual(g.processTile(0, blue, m.id).ok, true);
+  assert.strictEqual(g.swapOkey(0, t(3, 13), m.id, m.tiles.indexOf(joker)).ok, true);
 });
 
 test('Taşları İşle (otomatik) işlenebilenleri işler, okeyi tutar', () => {
@@ -571,6 +701,113 @@ test('çift açan eli kaybederse eldeki taşların 2 katı yazılır', () => {
   assert.strictEqual(res.deltas[1], 14); // (3 + 4) x 2
 });
 
+test('kafa bitişinde açılmış rakip x1, açmamış rakip x2 yazar', () => {
+  const g = newGame();
+  g.players[0].opened = true;
+  g.players[1].opened = true;
+  g.players[1].hand = [t(0, 3), t(0, 4)];
+  const res = scoring.compute({
+    players: g.players,
+    winner: 0,
+    okeyFinish: false,
+    pairFinish: false,
+    kafaFinish: true,
+    okey,
+    partners: false,
+  });
+  assert.deepStrictEqual(res.deltas, [-202, 7, 404, 404]);
+  assert.strictEqual(res.finishType, 'Kafa bitişi (x2)');
+});
+
+test('okey kafa: bitiren -404, açmış rakip x2, açmamış rakip 808', () => {
+  const g = newGame();
+  g.players[0].opened = true;
+  g.players[1].opened = true;
+  g.players[1].hand = [t(0, 3), t(0, 4)];
+  const res = scoring.compute({
+    players: g.players,
+    winner: 0,
+    okeyFinish: true,
+    pairFinish: false,
+    kafaFinish: true,
+    okey,
+    partners: false,
+  });
+  assert.deepStrictEqual(res.deltas, [-404, 14, 808, 808]);
+});
+
+test('eşli kafa bitişinde açan rakip olunca açmayanın cezası yarıya iner', () => {
+  const g = newGame({ partners: true });
+  g.players[0].opened = true;
+  g.players[1].opened = true;
+  g.players[1].hand = [];
+  const res = scoring.compute({
+    players: g.players,
+    winner: 0,
+    okeyFinish: true,
+    pairFinish: false,
+    kafaFinish: true,
+    okey,
+    partners: true,
+  });
+  assert.deepStrictEqual(res.deltas, [-404, 0, 0, 404]);
+});
+
+test('çift açanın 100 üstü eli için +101, bitiş çarpanından sonra eklenir', () => {
+  const g = newGame();
+  g.players[0].opened = true;
+  g.players[1].opened = true;
+  g.players[1].openType = 'pairs';
+  g.players[1].hand = Array.from({ length: 4 }, (_, c) => [t(c, 13), t(c, 13, 1)]).flat();
+  const res = scoring.compute({
+    players: g.players,
+    winner: 0,
+    okeyFinish: true,
+    pairFinish: false,
+    okey,
+    partners: false,
+  });
+  assert.strictEqual(res.deltas[1], 517); // 104 x 2 x 2 + 101
+});
+
+test('dört oyuncu çift açınca el cezasız iptal olur ve tur sayılmaz', () => {
+  const g = newGame({ totalRounds: 1 });
+  for (const p of g.players.slice(0, 3)) {
+    p.opened = true;
+    p.openType = 'pairs';
+    p.pairCount = 5;
+  }
+  g.players[0].score = 101;
+  g.penalties.push({ round: g.round, player: 0, type: 'İşlek taş', points: 101 });
+  const groups = pairs(5);
+  g.players[3].hand = [...groups.flat(), t(3, 2)];
+  g.current = 3;
+  g.step = 'play';
+
+  assert.strictEqual(g.openGroups(3, groups).ok, true);
+  assert.strictEqual(g.lastResult.voided, true);
+  assert.deepStrictEqual(g.lastResult.deltas, [0, 0, 0, 0]);
+  assert.strictEqual(g.players[0].score, 0);
+  assert.deepStrictEqual(g.penalties, []);
+  assert.strictEqual(g.matchOver(), false);
+  g.startRound();
+  assert.strictEqual(g.round, 1);
+});
+
+test('son çektiği taşı doğrudan atmak kafa bitişidir', () => {
+  const g = newGame();
+  g.players[0].hand = [];
+  g.players[0].opened = true;
+  g.current = 0;
+  g.step = 'draw';
+  g.deck = [t(0, 5)];
+  assert.strictEqual(g.draw(0).ok, true);
+  assert.strictEqual(g.discard(0, t(0, 5)).ok, true);
+  assert.strictEqual(g.lastResult.kafaFinish, true);
+  assert.strictEqual(g.lastResult.deltas[0], -202);
+  assert.strictEqual(g.lastResult.deltas[2], 404);
+});
+
 test('süre dolunca atılan taş: perdesiz, okey olmayan en düşük taş', () => {
   const g = newGame();
   g.players[0].hand = [t(0, 3), t(0, 4), t(0, 5), t(1, 7), t(3, 2), t(2, 9)];
@@ -616,4 +853,15 @@ test('gösterge taşı olan oyuncu taşı tüketmeden gösterebilir', () => {
   const view = g.viewFor(2);
   assert.strictEqual(view.indicatorShownBy, 2);
   assert.strictEqual(view.players[0].hand, undefined);
+});
+test('bot, gösterdiği taşı çift açarken joker olarak kullanır', () => {
+  const g = newGame();
+  g.indicator = t(2, 8);
+  g.players[1].hand = [t(0, 1), t(0, 1, 1), t(1, 3), t(1, 3, 1),
+    t(2, 5), t(2, 5, 1), t(3, 7), t(3, 7, 1), t(2, 8, 1), t(0, 10), t(1, 12)];
+  assert.strictEqual(bot.planOpen(g, 1), null);
+  g.indicatorShownBy = 1;
+  const plan = bot.planOpen(g, 1);
+  assert.strictEqual(plan.length, 5);
+  assert.ok(plan.some((pair) => pair.includes(t(2, 8, 1))));
 });

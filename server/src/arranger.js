@@ -74,7 +74,7 @@ function bestSeries(hand, okey) {
             bestWilds = wildsUsed;
             bestSel = [...sel];
         }
-        for (let i = from; i < list.length; i++) {
+        for (let i = from; i < list.length && nodes < 60000; i++) {
             const c = list[i];
             if (c.wilds > wildLeft) continue;
             if (!c.keys.every((key) => (counts.get(key) || 0) >= 1)) continue;
@@ -110,11 +110,14 @@ function bestSeries(hand, okey) {
 }
 
 /** Eldeki taşlardan mümkün olan en çok çifti bulur (eşsiz taş okeyle eşleşir). */
-function bestPairs(hand, okey) {
+function bestPairs(hand, okey, indicator = null) {
     const byKey = new Map();
     const wilds = [];
     for (const t of hand) {
-        if (R.isWild(okey, t)) wilds.push(t);
+        const shownIndicator = indicator !== null && !R.isFake(indicator) &&
+            !R.isFake(t) && R.colorOf(t) === R.colorOf(indicator) &&
+            R.numberOf(t) === R.numberOf(indicator);
+        if (R.isWild(okey, t) || shownIndicator) wilds.push(t);
         else {
             const key = R.slotKey(R.slotOf(okey, t));
             if (!byKey.has(key)) byKey.set(key, []);
@@ -124,13 +127,13 @@ function bestPairs(hand, okey) {
     const groups = [];
     const singles = [];
     for (const list of byKey.values()) {
-        while (list.length >= 2) groups.push(R.analyzePair([list.pop(), list.pop()], okey));
+        while (list.length >= 2) groups.push(R.analyzePair([list.pop(), list.pop()], okey, indicator));
         if (list.length) singles.push(list[0]);
     }
     while (wilds.length && singles.length) {
-        groups.push(R.analyzePair([singles.pop(), wilds.pop()], okey));
+        groups.push(R.analyzePair([wilds.pop(), singles.pop()], okey, indicator));
     }
-    while (wilds.length >= 2) groups.push(R.analyzePair([wilds.pop(), wilds.pop()], okey));
+    while (wilds.length >= 2) groups.push(R.analyzePair([wilds.pop(), wilds.pop()], okey, indicator));
     return {
         groups,
         leftover: [...singles, ...wilds],

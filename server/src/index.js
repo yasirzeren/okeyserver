@@ -2,6 +2,8 @@
 const http = require('http');
 const { Server } = require('socket.io');
 const { RoomManager } = require('./rooms');
+const { Wallet } = require('./wallet');
+const { join } = require('node:path');
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -19,7 +21,24 @@ const io = new Server(server, {
   cors: { origin: '*' },
   maxHttpBufferSize: 1e5,
 });
-const manager = new RoomManager(io);
+const wallet = process.env.RENDER && !process.env.BUNNY_DB_PATH
+  ? null
+  : new Wallet(process.env.BUNNY_DB_PATH || join(__dirname, '..', 'data', 'bunny.sqlite'));
+const walletUnavailable = { ok: false, message: 'Hesap servisi henüz yapılandırılmadı.' };
+const manager = new RoomManager(io, wallet);
+const authAttempts = new Map();
+const clearAttempts = setInterval(() => authAttempts.clear(), 60000);
+clearAttempts.unref();
+
+function auth(socket, action) {
+  const key = socket.handshake.address;
+  const attempts = authAttempts.get(key) || 0;
+  if (attempts >= 12 || (!authAttempts.has(key) && authAttempts.size >= 5000)) {
+    return { ok: false, message: 'Çok fazla giriş denemesi. Bir dakika bekle.' };
+  }
+  authAttempts.set(key, attempts + 1);
+  return action();
+}
 
 io.on('connection', (socket) => {
   // Basit hız sınırı: saniyede en fazla ~20 istek (30'luk kova).
@@ -47,6 +66,15 @@ io.on('connection', (socket) => {
     });
   };
 
+  on('account_register', (d) => wallet ? auth(socket, () => wallet.register(d)) : walletUnavailable);
+  on('account_login', (d) => wallet ? auth(socket, () => wallet.login(d)) : walletUnavailable);
+  on('account_profile', (d) => wallet?.account(d.token) ?? walletUnavailable);
+  on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
+
+  on('admin_lookup', (d) => wallet?.adminLookup(d.token, d.email) ?? walletUnavailable);
+  on('admin_adjust', (d) => wallet?.adminAdjust(d.token, d) ?? walletUnavailable);
+
+  on('list_rooms', () => manager.listRooms());
   on('create_room', (d) => manager.createRoom(socket, d));
   on('join_room', (d) => manager.joinRoom(socket, d));
   on('resume', (d) => manager.resume(socket, d));

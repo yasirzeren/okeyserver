@@ -7,7 +7,7 @@ const INDICATOR_MS = 5000;
 const TURN_MS = 30000; // her oyuncunun sıra süresi
 const DISCONNECTED_MS = 4000; // bağlantısı kopan oyuncunun sırası
 const NEXT_MS = 45000; // sonraki ele otomatik geçiş
-const BOT_MS = 900;
+const BOT_MS = 800;
 const LOBBY_GRACE_MS = 30000; // lobide bağlantı kopunca bekleme
 const IDLE_CLOSE_MS = 10 * 60 * 1000; // bağlı kimse yoksa oda kapanır
 const MAX_ROOMS = 500;
@@ -117,6 +117,7 @@ class Room {
       hostSeat: this.hostSeat,
       mySeat: m.seat,
       settings: this.settings,
+      carrotEntry: this.carrotEntry ? 100 : 0,
       started: this.started,
       members: this.members
         .filter(Boolean)
@@ -158,7 +159,7 @@ class Room {
     view.mySeat = m.seat;
     view.indicatorDeadline = g.phase === 'indicator' ? this.indicatorDeadline : null;
     view.turnDeadline =
-      g.phase === 'playing' && !this.members[g.current].isBot ? this.turnDeadline : null;
+      g.phase === 'playing' ? this.turnDeadline : null;
     for (const p of view.players) {
       const mm = this.members[p.seat];
       p.connected = mm.isBot ? true : mm.connected;
@@ -174,6 +175,16 @@ class Room {
 
   afterChange() {
     if (this.closed) return;
+    if (this.walletMatch && this.game?.matchOver()) {
+      const totals = this.game.players.map((player) => player.score);
+      const scores = this.settings.partners
+        ? totals.map((score, seat) => score + totals[(seat + 2) % 4])
+        : totals;
+      const best = Math.min(...scores);
+      this.manager.wallet.settle(this.walletMatch,
+        scores.flatMap((score, seat) => score === best ? [seat] : []));
+      this.walletMatch = null;
+    }
     this.flushGame();
     this.schedule(); // önce süre güncellensin, sonra istemcilere gitsin
     this.broadcastState();
@@ -190,12 +201,13 @@ class Room {
     return name;
   }
 
-  addHuman(token, name, socketId) {
+  addHuman(token, name, socketId, accountId = null) {
     const seat = this.members.findIndex((m) => m === null);
     if (seat < 0) return null;
     const m = {
       seat,
       token,
+      accountId,
       name: this.uniqueName(name),
       isBot: false,
       ready: false,
@@ -213,6 +225,15 @@ class Room {
     if (member.seat !== this.hostSeat) return fail('Oyunu yalnızca oda sahibi başlatabilir.');
     const waiting = this.humans().filter((m) => m.seat !== this.hostSeat && !m.ready);
     if (waiting.length) return fail('Tüm oyuncular hazır olmalı.');
+    if (this.carrotEntry) {
+      if (this.connectedHumans().length !== 4) {
+        return fail('Havuçlu maç için dört oyuncu bağlı olmalı.');
+      }
+      const matchId = crypto.randomUUID();
+      const entry = this.manager.wallet.hold(matchId, this.members.map((m) => m.accountId));
+      if (!entry.ok) return entry;
+      this.walletMatch = matchId;
+    }
     const used = new Set(this.members.filter(Boolean).map((m) => m.name.toLowerCase()));
     const names = BOT_NAMES.filter((n) => !used.has(n.toLowerCase()));
     let extra = 1;
@@ -235,7 +256,15 @@ class Room {
       this.settings,
       this.members.map((m) => ({ name: m.name, isBot: m.isBot }))
     );
-    this.game.startRound();
+    try {
+      this.game.startRound();
+    } catch (error) {
+      if (this.walletMatch) this.manager.wallet.settle(this.walletMatch);
+      this.walletMatch = null;
+      this.game = null;
+      this.started = false;
+      throw error;
+    }
     this.onRoundStarted();
     this.broadcastRoom();
     this.afterChange();
@@ -278,8 +307,6 @@ class Room {
       this.turnKey = '';
       return;
     }
-    if (this.botBusy) return;
-
     let key;
     let delay = 0;
     let action;
@@ -297,18 +324,19 @@ class Room {
     } else if (g.phase === 'playing') {
       const seat = g.current;
       const m = this.members[seat];
+      const tk = `${g.round}:${g.turnNo}:${seat}:${m.connected}`;
+      if (tk !== this.turnKey) {
+        this.turnKey = tk;
+        this.turnStart = Date.now();
+        this.turnBase = m.connected || m.isBot ? TURN_MS : DISCONNECTED_MS;
+      }
+      this.turnDeadline = this.turnStart + this.turnBase + g.turnAdjustMs;
       if (m.isBot) {
+        if (this.botBusy) return;
         key = `b:${g.round}:${g.turnNo}`;
         if (key === this.scheduleKey && this.timer) return;
         action = () => this.runBot(seat);
       } else {
-        const tk = `${g.round}:${g.turnNo}:${seat}:${m.connected}`;
-        if (tk !== this.turnKey) {
-          this.turnKey = tk;
-          this.turnStart = Date.now();
-          this.turnBase = m.connected ? TURN_MS : DISCONNECTED_MS;
-        }
-        this.turnDeadline = this.turnStart + this.turnBase + g.turnAdjustMs;
         key = `p:${tk}:${g.turnAdjustMs}`;
         if (key === this.scheduleKey && this.timer) return;
         delay = Math.max(0, this.turnDeadline - Date.now());
@@ -378,7 +406,7 @@ class Room {
         else g.draw(seat);
         this.afterChange();
         if (!can()) return;
-        await sleep(700);
+        await sleep(Math.floor(BOT_MS / 1.2));
         if (!can()) return;
       }
       const plan = bot.planOpen(g, seat);
@@ -394,7 +422,7 @@ class Room {
         const r = g.processTile(seat, mv.tile, mv.meldId);
         this.afterChange();
         if (!r.ok) break;
-        await sleep(500);
+        await sleep(Math.floor(BOT_MS / 1.6));
       }
       if (!can()) return;
       if (g.canReturnSide(seat)) {
@@ -402,7 +430,7 @@ class Room {
         g.returnSide(seat);
         this.afterChange();
         if (!can()) return;
-        await sleep(700);
+        await sleep(Math.floor(BOT_MS / 1.2));
         if (!can()) return;
         g.draw(seat);
         this.afterChange();
@@ -421,8 +449,9 @@ class Room {
 }
 
 class RoomManager {
-  constructor(io) {
+  constructor(io, wallet = null) {
     this.io = io;
+    this.wallet = wallet;
     this.rooms = new Map();
     this.sessions = new Map(); // token -> {code, seat}
     this.sweeper = setInterval(() => this.sweep(), 60000);
@@ -455,14 +484,29 @@ class RoomManager {
   }
 
   // ------------------------------------------------------------------ lobi
+  listRooms() {
+    return ok('', { rooms: [...this.rooms.values()]
+      .filter((r) => !r.started && !r.closed && r.connectedHumans().length > 0)
+      .map((r) => ({ code: r.code, name: r.name,
+        count: r.members.filter(Boolean).length,
+        assisted: r.settings.assisted, folding: r.settings.folding,
+        totalRounds: r.settings.totalRounds,
+        ...(r.carrotEntry ? { carrotEntry: 100 } : {}) })) });
+  }
+
   createRoom(socket, d) {
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
-    const name = cleanName(d.playerName, 14, 'Oyuncu');
+    const accountId = this.wallet?.authenticate(d.accountToken) ?? null;
+    const paid = d.carrotEntry === true;
+    if (paid && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
+    if (paid && this.wallet.profile(accountId).carrots < 100) return fail('En az 100 havucun olmalı.');
+    const name = accountId ? this.wallet.profile(accountId).name : cleanName(d.playerName, 14, 'Oyuncu');
     const roomName = cleanName(d.roomName, 24, 'Oda');
     const room = new Room(this, this.newCode(), roomName, normalizeSettings(d.settings));
     const token = this.newToken();
-    const m = room.addHuman(token, name, socket.id);
+    room.carrotEntry = paid;
+    const m = room.addHuman(token, name, socket.id, accountId);
     room.hostSeat = m.seat;
     this.rooms.set(room.code, room);
     this.sessions.set(token, { code: room.code, seat: m.seat });
@@ -478,7 +522,14 @@ class RoomManager {
     if (!room) return fail('Oda bulunamadı.');
     if (room.started) return fail('Oyun başlamış, odaya katılamazsın.');
     const token = this.newToken();
-    const m = room.addHuman(token, cleanName(d.playerName, 14, 'Oyuncu'), socket.id);
+    const accountId = this.wallet?.authenticate(d.accountToken) ?? null;
+    if (room.carrotEntry && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
+    if (room.carrotEntry && this.wallet.profile(accountId).carrots < 100) return fail('En az 100 havucun olmalı.');
+    if (room.carrotEntry && room.humans().some((m) => m.accountId === accountId)) {
+      return fail('Bu hesap zaten odada.');
+    }
+    const name = accountId ? this.wallet.profile(accountId).name : cleanName(d.playerName, 14, 'Oyuncu');
+    const m = room.addHuman(token, name, socket.id, accountId);
     if (!m) return fail('Oda dolu.');
     this.sessions.set(token, { code: room.code, seat: m.seat });
     socket.data.token = token;
@@ -500,6 +551,9 @@ class RoomManager {
     const m = room && room.members[s.seat];
     if (!s || !room || !m || m.token !== token) {
       return fail('Oturum bulunamadı (oda kapanmış veya sunucu yeniden başlamış olabilir).');
+    }
+    if (room.carrotEntry && this.wallet.authenticate(d.accountToken) !== m.accountId) {
+      return fail('Bu odaya dönmek için aynı hesaba giriş yap.');
     }
     if (m.graceTimer) {
       clearTimeout(m.graceTimer);
@@ -611,6 +665,10 @@ class RoomManager {
 
   closeRoom(room, reason) {
     if (room.closed) return;
+    if (room.walletMatch) {
+      this.wallet.settle(room.walletMatch);
+      room.walletMatch = null;
+    }
     room.closed = true;
     room.clearTimer();
     for (const m of room.humans()) {

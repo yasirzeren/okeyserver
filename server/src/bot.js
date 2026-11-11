@@ -9,6 +9,23 @@ function canProcess(g, id) {
   return g.melds.some((m) => m.kind !== 'pair' && R.canExtend(m, id, g.okey) !== null);
 }
 
+function bestLeavingDiscard(hand, arrange, score) {
+  const best = arrange(hand);
+  if (best.groups.length === 0 || best.leftover.length > 0) return best;
+
+  let alternative = null;
+  for (const tile of hand) {
+    const candidate = arrange(hand.filter((held) => held !== tile));
+    if (
+      candidate.groups.length > 0 &&
+      (!alternative || score(candidate) > score(alternative))
+    ) {
+      alternative = candidate;
+    }
+  }
+  return alternative || best;
+}
+
 /** Açılmamış bot yalnızca hemen açabiliyorsa yandan alır. */
 function shouldTakeSide(g, p) {
   const pile = g.discards[(p + 3) % 4];
@@ -32,14 +49,27 @@ function shouldTakeSide(g, p) {
 function planOpen(g, p) {
   const pl = g.players[p];
   const okey = g.okey;
+  const indicator = g.indicatorShownBy === p ? g.indicator : null;
   if (pl.opened && pl.openType === 'pairs') {
-    const a = Arranger.bestPairs(pl.hand, okey);
+    const a = bestLeavingDiscard(
+      pl.hand,
+      (hand) => Arranger.bestPairs(hand, okey, indicator),
+      (arrangement) => arrangement.groups.length
+    );
     return a.groups.length ? a.groups.map((x) => x.tiles) : null;
   }
-  const a = Arranger.bestSeries(pl.hand, okey);
+  const a = bestLeavingDiscard(
+    pl.hand,
+    (hand) => Arranger.bestSeries(hand, okey),
+    (arrangement) => arrangement.points
+  );
   if (pl.opened) return a.groups.length ? a.groups.map((x) => x.tiles) : null;
   if (a.groups.length && a.points >= g.requiredSeriesFor(p)) return a.groups.map((x) => x.tiles);
-  const pr = Arranger.bestPairs(pl.hand, okey);
+  const pr = bestLeavingDiscard(
+    pl.hand,
+    (hand) => Arranger.bestPairs(hand, okey, indicator),
+    (arrangement) => arrangement.groups.length
+  );
   if (pr.groups.length >= g.requiredPairsFor(p)) return pr.groups.map((x) => x.tiles);
   return null;
 }
@@ -49,6 +79,7 @@ function nextProcess(g, p) {
   const pl = g.players[p];
   if (!pl.opened) return null;
   for (const t of pl.hand) {
+    if (pl.hand.length <= 1) break;
     if (R.isWild(g.okey, t) && pl.hand.length > 2) continue;
     for (const m of g.melds) {
       if (m.kind === 'pair') continue;

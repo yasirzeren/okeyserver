@@ -169,11 +169,18 @@ function canExtend(meld, id, okey) {
         return null;
     }
     const s = slotOf(okey, id);
-    if (s.number === number && !used.has(s.color)) return { atEnd: true, slot: s };
-    return null;
+    if (s.number !== number) return null;
+    if (!used.has(s.color)) return { atEnd: true, slot: s };
+
+    // A three-tile set can assign its joker to the fourth colour.
+    const jokerIndex = meld.slots.findIndex((sl) => sl.color === s.color);
+    if (!isWild(okey, meld.tiles[jokerIndex])) return null;
+    const missing = [0, 1, 2, 3].find((color) => !used.has(color));
+    return { atEnd: true, slot: s, jokerIndex, jokerSlot: slot(missing, number) };
 }
 
 function extend(meld, id, by, ext) {
+    if (ext.jokerIndex !== undefined) meld.slots[ext.jokerIndex] = ext.jokerSlot;
     if (ext.atEnd) {
         meld.tiles.push(id);
         meld.slots.push(ext.slot);

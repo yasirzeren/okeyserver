@@ -59,6 +59,7 @@ class Game {
     this.pairOpenBy = [0, 0, 0, 0];
     this.lastDrawn = null; // {seat, id}
     this.lastResult = null;
+    this.roundStartScores = this.players.map((p) => p.score);
     this.penaltyThisTurn = false;
     this.abandonedOpen = false;
     this.returnedSide = false;
@@ -83,7 +84,9 @@ class Game {
   }
 
   matchOver() {
-    return this.phase === 'finished' && this.round >= this.totalRounds();
+    return this.phase === 'finished' &&
+      !this.lastResult?.voided &&
+      this.round >= this.totalRounds();
   }
 
   /**
@@ -194,6 +197,7 @@ class Game {
 
   // ------------------------------------------------------------- el başlangıcı
   startRound() {
+    if (this.lastResult?.voided) this.round--;
     this.round++;
     this.starter = (this.round - 1) % 4;
     for (const p of this.players) {
@@ -217,6 +221,7 @@ class Game {
     this.lastResult = null;
     this.lastDrawn = null;
     this.resetTurnState();
+    this.roundStartScores = this.players.map((p) => p.score);
 
     this.deck = this.shuffleFn(Array.from({ length: 106 }, (_, i) => i));
     for (let p = 0; p < 4; p++) {
@@ -412,9 +417,9 @@ class Game {
       });
       this.say(`${pl.name} yeni grup açtı.`);
     }
-    if (pl.hand.length === 0) {
-      this.commitIfPending(p);
-      this.finish(p);
+    if (e.pairs && this.players.every((player) => player.openType === 'pairs')) {
+      this.finish(null, false, false, true);
+      return ok('Herkes çift açtı. El iptal edildi.');
     }
     return ok('Açma başarılı.');
   }
@@ -437,7 +442,11 @@ class Game {
     const resolved = [];
     for (const g of groups) {
       const r = pairs
-        ? R.analyzePair(g, this.okey, this.indicator)
+        ? R.analyzePair(
+            g,
+            this.okey,
+            this.indicatorShownBy === p ? this.indicator : null
+          )
         : R.analyzeGroup(g, this.okey);
       if (!r) {
         return fail(`Geçersiz ${pairs ? 'çift' : 'seri'}: ${g.map(R.tileName).join(', ')}.`);
@@ -457,6 +466,9 @@ class Game {
         return fail(`${resolved.length} çift var, açmak için en az ${req} çift gerekli.`);
       }
     }
+    if (seen.size === handSet.size) {
+      return fail('Bitiş için bir taşı elinde bırakıp yan tarafa atmalısın.');
+    }
     return { ok: true, message: '', groups: resolved, pairs, points: total };
   }
 
@@ -474,7 +486,7 @@ class Game {
 
   // --------------------------------------------------------- açılışı kesinleştir
   /**
-   * Taş atılınca (ya da el bitince) bekleyen açılış kesinleşir.
+   * Taş atılınca bekleyen açılış kesinleşir.
    * Yandan alınan taşla seri açılırsa 10, çift açılırsa 20 kat ceza yazılır.
    */
   commit(p) {
@@ -544,6 +556,7 @@ class Game {
           m.slots.shift();
           m.addedBy.shift();
         }
+        if (u.jokerIndex !== undefined) m.slots[u.jokerIndex] = u.previousJokerSlot;
       }
       pl.hand.push(u.tile);
       pl.processedCount--;
@@ -589,12 +602,15 @@ class Game {
 
   // ---------------------------------------------------------------- işleme
   applyProcess(p, id, meld, ext) {
+    const jokerIndex = ext.jokerIndex;
+    const previousJokerSlot = jokerIndex === undefined ? undefined : meld.slots[jokerIndex];
     R.extend(meld, id, p, ext);
     const pl = this.players[p];
     pl.hand.splice(pl.hand.indexOf(id), 1);
     pl.processedCount++;
     if (id === this.sideTaken) this.sideTakenUsed = true;
-    this.undo.push({ kind: 'proc', tile: id, meldId: meld.id, atEnd: ext.atEnd });
+    this.undo.push({ kind: 'proc', tile: id, meldId: meld.id, atEnd: ext.atEnd,
+      jokerIndex, previousJokerSlot });
     this.say(`${pl.name} taş işledi.`);
   }
 
@@ -608,11 +624,10 @@ class Game {
     if (!meld) return fail('Hedef grup bulunamadı.');
     const ext = R.canExtend(meld, id, this.okey);
     if (!ext) return fail('Bu taş bu gruba işlenemez.');
-    this.applyProcess(p, id, meld, ext);
-    if (pl.hand.length === 0) {
-      this.commitIfPending(p);
-      this.finish(p);
+    if (pl.hand.length === 1) {
+      return fail('Bitiş için son taşı elinde bırakıp yan tarafa atmalısın.');
     }
+    this.applyProcess(p, id, meld, ext);
     return ok('Taş işlendi.');
   }
 
@@ -624,7 +639,7 @@ class Game {
     if (!pl.opened) return fail('Taş işlemek için önce açmalısın.');
     let n = 0;
     let again = true;
-    while (again && pl.hand.length > 0) {
+    while (again && pl.hand.length > 1) {
       again = false;
       for (const t of [...pl.hand]) {
         if (R.isWild(this.okey, t)) continue;
@@ -647,10 +662,6 @@ class Game {
       }
     }
     if (n === 0) return fail('İşlenecek uygun taş yok.');
-    if (pl.hand.length === 0) {
-      this.commitIfPending(p);
-      this.finish(p);
-    }
     return ok(`${n} taş işlendi.`);
   }
 
@@ -669,8 +680,15 @@ class Game {
     if (a === b || !pl.hand.includes(a) || !pl.hand.includes(b)) {
       return fail('Bu taşlar elinde değil.');
     }
-    const r = R.analyzePair([a, b], this.okey);
+    const r = R.analyzePair(
+      [a, b],
+      this.okey,
+      this.indicatorShownBy === p ? this.indicator : null
+    );
     if (!r) return fail('Seçilen taşlar çift oluşturmuyor.');
+    if (pl.hand.length <= 2) {
+      return fail('Bitiş için bir taşı elinde bırakıp yan tarafa atmalısın.');
+    }
     const id = this.meldSeq++;
     this.melds.push({
       id,
@@ -686,10 +704,6 @@ class Game {
     if (a === this.sideTaken || b === this.sideTaken) this.sideTakenUsed = true;
     this.undo.push({ kind: 'pair', tiles: [a, b], meldId: id });
     this.say(`${pl.name}, ${tp.name} oyuncusunun çiftlerine çift işledi.`);
-    if (pl.hand.length === 0) {
-      this.commitIfPending(p);
-      this.finish(p);
-    }
     return ok('Çift işlendi.');
   }
 
@@ -707,6 +721,9 @@ class Game {
     }
     const cur = m.tiles[index];
     if (!R.isWild(this.okey, cur)) return fail('Burada okey yok.');
+    if (m.kind === 'set' && m.tiles.length < 4) {
+      return fail('Okeyi almadan önce grubu dört taşla tamamlamalısın.');
+    }
     if (R.isWild(this.okey, id)) return fail('Okeyin yerine okey konamaz.');
     const s = R.slotOf(this.okey, id);
     const ms = m.slots[index];
@@ -727,6 +744,7 @@ class Game {
     if (g) return g;
     const pl = this.players[p];
     if (!pl.hand.includes(id)) return fail('Bu taş elinde değil.');
+    const kafaFinish = this.lastDrawn?.seat === p && this.lastDrawn.id === id;
     let extra = '';
 
     // Bekleyen açılış taş atınca kesinleşir.
@@ -760,7 +778,7 @@ class Game {
     pl.hand.splice(pl.hand.indexOf(id), 1);
     this.discards[p].push(id);
     if (pl.hand.length === 0) {
-      this.finish(p, R.isWild(this.okey, id));
+      this.finish(p, R.isWild(this.okey, id), kafaFinish);
       return ok('Oyun bitti.');
     }
     this.nextTurn();
@@ -775,7 +793,13 @@ class Game {
     this.lastDrawn = null;
   }
 
-  finish(winner, okeyFinish = false) {
+  finish(winner, okeyFinish = false, kafaFinish = false, voided = false) {
+    if (voided) {
+      this.players.forEach((p, i) => {
+        p.score = this.roundStartScores[i];
+      });
+      this.penalties = [];
+    }
     const pairFinish = winner !== null && this.players[winner].openType === 'pairs';
     const result = scoring.compute({
       players: this.players,
@@ -784,6 +808,8 @@ class Game {
       pairFinish,
       okey: this.okey,
       partners: this.settings.partners,
+      kafaFinish,
+      voided,
     });
     this.lastResult = result;
     this.players.forEach((p, i) => {
@@ -792,7 +818,7 @@ class Game {
     this.phase = 'finished';
     this.say(
       winner === null
-        ? `El bitti: ${result.finishType}.`
+        ? (voided ? 'Herkes çift açtı. El iptal edildi.' : `El bitti: ${result.finishType}.`)
         : `${this.players[winner].name} oyunu bitirdi (${result.finishType}).`
     );
     if (this.matchOver()) this.say('Maç bitti.');

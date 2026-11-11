@@ -249,3 +249,42 @@ test('ayarlar sabit ceza ve çift kurallarını korur', () => {
     workablePenalty: 202,
   }).workablePenalty, 101);
 });
+test('public directory exposes waiting room metadata without private state', () => {
+  const { mgr } = setup();
+  const a = sock('directory-a');
+  const created = mgr.createRoom(a, { playerName: 'Ali', roomName: 'Public', settings: {} });
+  const listed = mgr.listRooms();
+  assert.strictEqual(listed.ok, true);
+  assert.strictEqual(listed.rooms.length, 1);
+  assert.deepStrictEqual(Object.keys(listed.rooms[0]).sort(), ['assisted', 'code', 'count', 'folding', 'name', 'totalRounds']);
+  assert.strictEqual(listed.rooms[0].code, created.code);
+  assert.strictEqual(listed.rooms[0].count, 1);
+  mgr.startGame(a);
+  assert.strictEqual(mgr.listRooms().rooms.length, 0);
+  mgr.closeRoom(mgr.rooms.get(created.code), 'test');
+  clearInterval(mgr.sweeper);
+});
+
+test('bot süresi ve bot sonrası oyuncunun süresi ilk durum paketinde görünür', () => {
+  const { io, mgr } = setup();
+  const { room } = startedRoom(mgr);
+  try {
+    room.game.current = 2;
+    room.game.turnNo++;
+    room.afterChange();
+    const botView = io.sent.filter((e) => e.id === 'a' && e.ev === 'state').pop().data;
+    assert.ok(botView.turnDeadline - botView.serverTime >= 29000);
+    room.botBusy = true;
+    room.turnStart -= 20000;
+    room.turnDeadline -= 20000;
+    room.game.current = 0;
+    room.game.turnNo++;
+    room.afterChange();
+    const humanView = io.sent.filter((e) => e.id === 'a' && e.ev === 'state').pop().data;
+    assert.strictEqual(humanView.current, 0);
+    assert.ok(humanView.turnDeadline - humanView.serverTime >= 29000);
+  } finally {
+    room.clearTimer();
+    clearInterval(mgr.sweeper);
+  }
+});
