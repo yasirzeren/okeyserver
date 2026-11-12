@@ -54,6 +54,11 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     assert.equal((await wallet.account(users[1].token)).movements[0].amount, 500);
     await wallet.logout(users[1].token);
     assert.equal(await wallet.authenticate(users[1].token), null);
+    const largeGrant = { ...change, amount: 3000000000, requestId: 'b'.repeat(32) };
+    assert.equal((await wallet.adminAdjust(users[1].token, largeGrant)).ok, false);
+    assert.equal((await wallet.adminAdjust(users[0].token, largeGrant)).target.carrots, 3000001400);
+    assert.equal((await wallet.adminAdjust(users[0].token, largeGrant)).target.carrots, 3000001400);
+    assert.equal((await wallet.adminLookup(users[0].token, 'p1@example.test')).target.carrots, 3000001400);
     const email = 'p0@example.test';
     const secret = 'test-secret-with-at-least-32-characters';
     let code;

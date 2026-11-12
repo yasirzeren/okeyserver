@@ -20,7 +20,7 @@ class PostgresWallet {
       CREATE TABLE IF NOT EXISTS accounts (
         id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
         salt TEXT NOT NULL, password TEXT NOT NULL,
-        carrots INTEGER NOT NULL DEFAULT 0 CHECK(carrots >= 0)
+        carrots BIGINT NOT NULL DEFAULT 0 CHECK(carrots >= 0)
       );
       CREATE TABLE IF NOT EXISTS sessions (
         hash TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), expires BIGINT NOT NULL
@@ -35,14 +35,26 @@ class PostgresWallet {
       CREATE TABLE IF NOT EXISTS admins (account_id TEXT PRIMARY KEY REFERENCES accounts(id));
       CREATE TABLE IF NOT EXISTS admin_adjustments (
         admin_id TEXT NOT NULL REFERENCES accounts(id), request_id TEXT NOT NULL,
-        account_id TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL,
+        account_id TEXT NOT NULL REFERENCES accounts(id), amount BIGINT NOT NULL,
         reason TEXT NOT NULL, time BIGINT NOT NULL, PRIMARY KEY(admin_id, request_id)
       );
       CREATE TABLE IF NOT EXISTS movements (
         account_id TEXT NOT NULL REFERENCES accounts(id), ref TEXT NOT NULL,
-        amount INTEGER NOT NULL, reason TEXT NOT NULL, time BIGINT NOT NULL,
+        amount BIGINT NOT NULL, reason TEXT NOT NULL, time BIGINT NOT NULL,
         sequence BIGSERIAL, PRIMARY KEY(account_id, ref)
       );
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'accounts'
+            AND column_name = 'carrots' AND data_type = 'integer'
+        ) THEN
+          ALTER TABLE accounts ALTER COLUMN carrots TYPE BIGINT;
+          ALTER TABLE movements ALTER COLUMN amount TYPE BIGINT;
+          ALTER TABLE admin_adjustments ALTER COLUMN amount TYPE BIGINT;
+        END IF;
+      END $$;
       CREATE INDEX IF NOT EXISTS movements_history ON movements(account_id, time DESC, sequence DESC);
       CREATE INDEX IF NOT EXISTS held_matches ON matches(expires) WHERE status = 'held';
     `);
@@ -55,8 +67,9 @@ class PostgresWallet {
     if (inserted) await db.run('UPDATE accounts SET carrots = carrots + ? WHERE id = ?', amount, id);
   }
 
-  profile(id, db = this.db, lock = false) {
-    return db.get('SELECT id, name, carrots FROM accounts WHERE id = ?' + (lock ? db.lock : ''), id);
+  async profile(id, db = this.db, lock = false) {
+    const row = await db.get('SELECT id, name, carrots FROM accounts WHERE id = ?' + (lock ? db.lock : ''), id);
+    return row && { ...row, carrots: Number(row.carrots) };
   }
   async isAdmin(id) {
     return id != null && !!(await this.db.get('SELECT 1 FROM admins WHERE account_id = ?', id));
@@ -185,21 +198,21 @@ class PostgresWallet {
     const isAdmin = await this.isAdmin(id);
     const movements = await this.db.all(
       'SELECT amount,reason,time FROM movements WHERE account_id = ? ORDER BY time DESC,sequence DESC LIMIT 20', id);
-    return { ok: true, profile: { ...profile, isAdmin }, movements: movements.map((m) => ({ ...m, time: Number(m.time) })) };
+    return { ok: true, profile: { ...profile, isAdmin }, movements: movements.map((m) => ({ ...m, amount: Number(m.amount), time: Number(m.time) })) };
   }
 
   async adminLookup(token, email) {
     if (!await this.isAdmin(await this.authenticate(token))) return fail('Yönetici yetkisi gerekli.');
     if (typeof email !== 'string' || email.length > 254) return fail('Geçerli bir e-posta gir.');
     const target = await this.db.get('SELECT id,name,carrots FROM accounts WHERE email = ?', email.trim().toLowerCase());
-    return target ? { ok: true, target } : fail('Oyuncu bulunamadı.');
+    return target ? { ok: true, target: { ...target, carrots: Number(target.carrots) } } : fail('Oyuncu bulunamadı.');
   }
 
   async adminAdjust(token, { accountId, amount, reason, requestId }) {
     const admin = await this.authenticate(token);
     if (!await this.isAdmin(admin)) return fail('Yönetici yetkisi gerekli.');
     if (typeof accountId !== 'string' || accountId.length !== 36 ||
-        !Number.isSafeInteger(amount) || amount === 0 || Math.abs(amount) > 1000000 ||
+        !Number.isSafeInteger(amount) || amount === 0 ||
         typeof reason !== 'string' || !reason.trim() || reason.length > 180 ||
         typeof requestId !== 'string' || !/^[0-9a-f]{32}$/.test(requestId)) {
       return fail('Geçerli bir miktar ve gerekçe gir.');
@@ -211,10 +224,10 @@ class PostgresWallet {
       const previous = await db.get(
         'SELECT account_id,amount,reason FROM admin_adjustments WHERE admin_id = ? AND request_id = ?', admin, requestId);
       if (previous) {
-        return previous.account_id === accountId && previous.amount === amount && previous.reason === reason
+        return previous.account_id === accountId && Number(previous.amount) === amount && previous.reason === reason
           ? { ok: true, target } : fail('Bu işlem kimliği daha önce kullanıldı.');
       }
-      if (target.carrots + amount < 0 || target.carrots + amount > 2147483647) {
+      if (target.carrots + amount < 0 || !Number.isSafeInteger(target.carrots + amount)) {
         return fail('Bu değişiklik geçerli bir bakiye bırakmıyor.');
       }
       await db.run('INSERT INTO admin_adjustments VALUES (?,?,?,?,?,?)', admin, requestId, accountId, amount, reason, Date.now());

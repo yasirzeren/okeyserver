@@ -100,7 +100,7 @@ class Wallet {
     const admin = this.authenticate(token);
     if (!this.isAdmin(admin)) return fail('Yönetici yetkisi gerekli.');
     if (typeof accountId !== 'string' || accountId.length !== 36 ||
-        !Number.isSafeInteger(amount) || amount === 0 || Math.abs(amount) > 1000000 ||
+        !Number.isSafeInteger(amount) || amount === 0 ||
         typeof reason !== 'string' || !reason.trim() || reason.length > 180 ||
         typeof requestId !== 'string' || !/^[0-9a-f]{32}$/.test(requestId)) {
       return fail('Geçerli bir miktar ve gerekçe gir.');
