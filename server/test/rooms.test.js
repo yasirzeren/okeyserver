@@ -19,6 +19,9 @@ function setup() {
   const io = fakeIo();
   const mgr = new RoomManager(io, {
     authenticate: async (token) => token || null,
+    holdRoom: async (_, payer) => payer === 'poor' ? { ok: false } : { ok: true },
+    setRoomPlayers: async () => true,
+    settle: async () => true,
     profile: async (id) => ({ id, name: id === 'a' ? 'Ali' : id === 'b' ? 'Veli' : id, carrots: 100 }),
   });
   return { io, mgr };
@@ -259,7 +262,7 @@ test('public directory exposes waiting room metadata without private state', asy
   const listed = mgr.listRooms();
   assert.strictEqual(listed.ok, true);
   assert.strictEqual(listed.rooms.length, 1);
-  assert.deepStrictEqual(Object.keys(listed.rooms[0]).sort(), ['assisted', 'code', 'count', 'folding', 'locked', 'name', 'totalRounds']);
+  assert.deepStrictEqual(Object.keys(listed.rooms[0]).sort(), ['assisted', 'carrotEntry', 'code', 'count', 'folding', 'locked', 'name', 'totalRounds']);
   assert.strictEqual(listed.rooms[0].code, created.code);
   assert.strictEqual(listed.rooms[0].count, 1);
   await mgr.startGame(a);
@@ -349,7 +352,7 @@ test('players return to the same lobby without dismissing others’ results', as
   assert.equal((await mgr.startGame(a)).ok, true);
 });
 
-test('ücretsiz online odada hesap zorunludur ve dönüş aynı hesabı gerektirir', async (t) => {
+test('online odada hesap zorunludur ve dönüş aynı hesabı gerektirir', async (t) => {
   const { mgr } = setup();
   t.after(() => clearInterval(mgr.sweeper));
   const host = sock('host');

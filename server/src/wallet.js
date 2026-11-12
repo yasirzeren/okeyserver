@@ -8,6 +8,7 @@ const STARTING_CARROTS = 1000;
 const ENTRY_CARROTS = 100;
 const TOKEN_LIFETIME = 30 * 86400 * 1000;
 const digest = (token) => createHash('sha256').update(token).digest('hex');
+const { ROOM_COST, DAILY_CARROTS, DAY_MS, latestRewardTime } = require('./carrot_policy');
 const fail = (message) => ({ ok: false, message });
 
 class Wallet {
@@ -38,6 +39,9 @@ class Wallet {
         account_id TEXT NOT NULL REFERENCES accounts(id), amount INTEGER NOT NULL,
         reason TEXT NOT NULL, time INTEGER NOT NULL,
         PRIMARY KEY (admin_id, request_id)
+      );
+      CREATE TABLE IF NOT EXISTS daily_reward_state (
+        id INTEGER PRIMARY KEY, last_cutoff INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS movements (
         account_id TEXT NOT NULL REFERENCES accounts(id), ref TEXT NOT NULL,
@@ -130,9 +134,16 @@ class Wallet {
 
   authenticate(token) {
     if (typeof token !== 'string' || !/^[0-9a-f]{64}$/.test(token)) return null;
-    return this.db.prepare(
-      'SELECT account_id FROM sessions WHERE hash = ? AND expires > ?'
-    ).get(digest(token), Date.now())?.account_id ?? null;
+    const now = Date.now();
+    const hash = digest(token);
+    const session = this.db.prepare(
+      'SELECT account_id, expires FROM sessions WHERE hash = ? AND expires > ?'
+    ).get(hash, now);
+    if (session && session.expires < now + 7 * DAY_MS) {
+      this.db.prepare('UPDATE sessions SET expires = ? WHERE hash = ? AND expires > ?')
+        .run(now + TOKEN_LIFETIME, hash, now);
+    }
+    return session?.account_id ?? null;
   }
 
   session(id) {
@@ -183,6 +194,43 @@ class Wallet {
     ).all(id) };
   }
 
+  holdRoom(id, payer) {
+    return this.transaction(() => {
+      if ((this.profile(payer)?.carrots ?? 0) < ROOM_COST) return fail('Oda açmak için 400 havucun olmalı.');
+      this.db.prepare("INSERT INTO matches VALUES (?, ?, 'held')")
+        .run(id, JSON.stringify({ payer, players: [] }));
+      this.credit(payer, `entry:${id}`, -ROOM_COST, 'Masa açılış ücreti');
+      return { ok: true };
+    });
+  }
+
+  setRoomPlayers(id, players) {
+    return this.transaction(() => {
+      const row = this.db.prepare("SELECT account_ids FROM matches WHERE id = ? AND status = 'held'").get(id);
+      if (!row) return false;
+      const entry = JSON.parse(row.account_ids);
+      this.db.prepare('UPDATE matches SET account_ids = ? WHERE id = ?')
+        .run(JSON.stringify({ ...entry, players }), id);
+      return true;
+    });
+  }
+
+  grantDaily(now = Date.now()) {
+    const latest = latestRewardTime(now);
+    return this.transaction(() => {
+      const previous = this.db.prepare('SELECT last_cutoff FROM daily_reward_state WHERE id = 1').get()?.last_cutoff;
+      for (let cutoff = (previous ?? latest - DAY_MS) + DAY_MS; cutoff <= latest; cutoff += DAY_MS) {
+        const accounts = this.db.prepare("SELECT account_id FROM movements WHERE ref = 'welcome' AND time <= ? ORDER BY account_id").all(cutoff);
+        for (const { account_id: id } of accounts) {
+          this.credit(id, `daily:${cutoff}`, DAILY_CARROTS, 'Günlük havuç hediyesi');
+        }
+      }
+      if (previous == null || previous < latest) {
+        this.db.prepare('INSERT INTO daily_reward_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_cutoff = excluded.last_cutoff').run(latest);
+      }
+    });
+  }
+
   hold(matchId, ids) {
     if (ids.length !== 4 || ids.some((id) => !id) || new Set(ids).size !== 4) {
       return fail('Havuçlu maç için dört farklı hesap gerekli.');
@@ -202,18 +250,23 @@ class Wallet {
     return this.transaction(() => {
       const match = this.db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
       if (match?.status !== 'held') return false;
-      const ids = JSON.parse(match.account_ids);
-      const recipients = ids.filter((id, seat) => winners.includes(seat));
-      if (!recipients.length) {
-        for (const id of ids) this.credit(id, `refund:${matchId}`, ENTRY_CARROTS, 'İptal edilen maçın iadesi');
-      } else {
-        const pot = ids.length * ENTRY_CARROTS;
+      const entry = JSON.parse(match.account_ids);
+      const sponsored = !Array.isArray(entry);
+      const ids = sponsored ? entry.players : entry;
+      const payers = sponsored ? [entry.payer] : ids;
+      const cost = sponsored ? ROOM_COST : ENTRY_CARROTS;
+      const recipients = ids.filter((id, seat) => id && winners.includes(seat));
+      const refund = !recipients.length && (!sponsored || !winners.length);
+      if (refund) {
+        for (const id of payers) this.credit(id, `refund:${matchId}`, cost, 'İptal edilen maçın iadesi');
+      } else if (recipients.length) {
+        const pot = payers.length * cost;
         const share = Math.floor(pot / recipients.length);
         recipients.forEach((id, i) => this.credit(id, `win:${matchId}`,
           share + (i < pot % recipients.length ? 1 : 0), 'Maç ödülü'));
       }
       this.db.prepare('UPDATE matches SET status = ? WHERE id = ?')
-        .run(recipients.length ? 'paid' : 'refunded', matchId);
+        .run(refund ? 'refunded' : 'paid', matchId);
       return true;
     });
   }

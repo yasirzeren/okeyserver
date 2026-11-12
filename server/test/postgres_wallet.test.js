@@ -79,6 +79,15 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     assert.equal(recovered.profile.id, ids[0]);
     assert.equal(recovered.profile.isAdmin, true);
     assert.equal(recovered.profile.carrots, 1300);
+
+    const noon = Date.UTC(2026, 10, 14, 9);
+    const beforeReward = await balances();
+    await wallet.db.run("UPDATE movements SET time = ? WHERE ref = 'welcome'", noon - 1);
+    await wallet.grantDaily(noon - 1);
+    assert.deepEqual(await balances(), beforeReward);
+    await wallet.grantDaily(noon);
+    await wallet.grantDaily(noon + 1000);
+    assert.deepEqual(await balances(), beforeReward.map((balance) => balance + 1000));
   } finally {
     await wallet.db.close();
   }

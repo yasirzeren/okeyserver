@@ -7,9 +7,11 @@ const { ENTRY_CARROTS } = require('./wallet');
 const derive = promisify(scrypt);
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 const validToken = (token) => typeof token === 'string' && /^[0-9a-f]{64}$/.test(token);
+const { ROOM_COST, DAILY_CARROTS, DAY_MS, latestRewardTime } = require('./carrot_policy');
 const fail = (message) => ({ ok: false, message });
 const resetDigest = (secret, email, code) =>
   createHmac('sha256', secret).update(email + '\0' + code).digest('hex');
+const TOKEN_LIFETIME = 30 * DAY_MS;
 const MATCH_LEASE = 5 * 60 * 1000;
 
 class PostgresWallet {
@@ -37,6 +39,9 @@ class PostgresWallet {
         admin_id TEXT NOT NULL REFERENCES accounts(id), request_id TEXT NOT NULL,
         account_id TEXT NOT NULL REFERENCES accounts(id), amount BIGINT NOT NULL,
         reason TEXT NOT NULL, time BIGINT NOT NULL, PRIMARY KEY(admin_id, request_id)
+      );
+      CREATE TABLE IF NOT EXISTS daily_reward_state (
+        id INTEGER PRIMARY KEY, last_cutoff BIGINT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS movements (
         account_id TEXT NOT NULL REFERENCES accounts(id), ref TEXT NOT NULL,
@@ -83,14 +88,21 @@ class PostgresWallet {
 
   async authenticate(token) {
     if (!validToken(token)) return null;
-    return (await this.db.get('SELECT account_id FROM sessions WHERE hash = ? AND expires > ?',
-      hashToken(token), Date.now()))?.account_id ?? null;
+    const now = Date.now();
+    const hash = hashToken(token);
+    const session = await this.db.get(
+      'SELECT account_id, expires FROM sessions WHERE hash = ? AND expires > ?', hash, now);
+    if (session && Number(session.expires) < now + 7 * DAY_MS) {
+      await this.db.run('UPDATE sessions SET expires = ? WHERE hash = ? AND expires > ?',
+        now + TOKEN_LIFETIME, hash, now);
+    }
+    return session?.account_id ?? null;
   }
 
   async session(db, id) {
     const token = randomBytes(32).toString('hex');
     await db.run('DELETE FROM sessions WHERE expires <= ?', Date.now());
-    await db.run('INSERT INTO sessions VALUES (?, ?, ?)', hashToken(token), id, Date.now() + 30 * 86400000);
+    await db.run('INSERT INTO sessions VALUES (?, ?, ?)', hashToken(token), id, Date.now() + TOKEN_LIFETIME);
     const profile = await this.profile(id, db);
     const isAdmin = !!(await db.get('SELECT 1 FROM admins WHERE account_id = ?', id));
     return { ok: true, token, profile: { ...profile, isAdmin } };
@@ -236,6 +248,52 @@ class PostgresWallet {
     });
   }
 
+  async holdRoom(id, payer) {
+    return this.db.transaction(async (db) => {
+      if (((await this.profile(payer, db, true))?.carrots ?? 0) < ROOM_COST) {
+        return fail('Oda açmak için 400 havucun olmalı.');
+      }
+      await db.run("INSERT INTO matches VALUES (?, ?, 'held', ?)",
+        id, JSON.stringify({ payer, players: [] }), Date.now() + MATCH_LEASE);
+      await this.credit(db, payer, `entry:${id}`, -ROOM_COST, 'Masa açılış ücreti');
+      return { ok: true };
+    });
+  }
+
+  async setRoomPlayers(id, players) {
+    return this.db.transaction(async (db) => {
+      const row = await db.get("SELECT account_ids FROM matches WHERE id = ? AND status = 'held'" + db.lock, id);
+      if (!row) return false;
+      await db.run('UPDATE matches SET account_ids = ? WHERE id = ?',
+        JSON.stringify({ ...row.account_ids, players }), id);
+      return true;
+    });
+  }
+
+  async grantDaily(now = Date.now()) {
+    const latest = latestRewardTime(now);
+    return this.db.transaction(async (db) => {
+      await db.run('INSERT INTO daily_reward_state VALUES (1, ?) ON CONFLICT DO NOTHING', latest - DAY_MS);
+      const previous = Number((await db.get('SELECT last_cutoff FROM daily_reward_state WHERE id = 1' + db.lock)).last_cutoff);
+      for (let cutoff = previous + DAY_MS; cutoff <= latest; cutoff += DAY_MS) {
+        await db.run(`
+          WITH eligible AS (
+            SELECT a.id FROM accounts a JOIN movements m ON m.account_id = a.id
+            WHERE m.ref = 'welcome' AND m.time <= ? ORDER BY a.id FOR UPDATE OF a
+          ), awarded AS (
+            INSERT INTO movements (account_id, ref, amount, reason, time)
+            SELECT id, ?, ?, 'Günlük havuç hediyesi', ? FROM eligible
+            ON CONFLICT DO NOTHING RETURNING account_id
+          )
+          UPDATE accounts SET carrots = carrots + ? FROM awarded WHERE id = awarded.account_id
+        `, cutoff, `daily:${cutoff}`, DAILY_CARROTS, cutoff, DAILY_CARROTS);
+      }
+      if (previous < latest) {
+        await db.run('UPDATE daily_reward_state SET last_cutoff = ? WHERE id = 1', latest);
+      }
+    });
+  }
+
   async hold(matchId, ids) {
     if (ids.length !== 4 || ids.some((id) => !id) || new Set(ids).size !== 4) {
       return fail('Havuçlu maç için dört farklı hesap gerekli.');
@@ -260,18 +318,23 @@ class PostgresWallet {
     return this.db.transaction(async (db) => {
       const match = await db.get('SELECT * FROM matches WHERE id = ?' + db.lock, matchId);
       if (match?.status !== 'held' || (expiredOnly && Number(match.expires) > Date.now())) return false;
-      const ids = match.account_ids;
-      const recipients = ids.filter((_, seat) => winners.includes(seat)).sort();
-      if (recipients.length === 0) {
-        for (const id of [...ids].sort()) await this.credit(db, id, `refund:${matchId}`, ENTRY_CARROTS, 'İptal edilen maçın iadesi');
-      } else {
-        const pot = ids.length * ENTRY_CARROTS;
+      const entry = match.account_ids;
+      const sponsored = !Array.isArray(entry);
+      const ids = sponsored ? entry.players : entry;
+      const payers = sponsored ? [entry.payer] : ids;
+      const cost = sponsored ? ROOM_COST : ENTRY_CARROTS;
+      const recipients = ids.filter((id, seat) => id && winners.includes(seat)).sort();
+      const refund = !recipients.length && (!sponsored || !winners.length);
+      if (refund) {
+        for (const id of [...payers].sort()) await this.credit(db, id, `refund:${matchId}`, cost, 'İptal edilen maçın iadesi');
+      } else if (recipients.length) {
+        const pot = payers.length * cost;
         const share = Math.floor(pot / recipients.length);
         for (const [i, id] of recipients.entries()) {
           await this.credit(db, id, `win:${matchId}`, share + (i < pot % recipients.length ? 1 : 0), 'Maç ödülü');
         }
       }
-      await db.run('UPDATE matches SET status = ? WHERE id = ?', recipients.length ? 'paid' : 'refunded', matchId);
+      await db.run('UPDATE matches SET status = ? WHERE id = ?', refund ? 'refunded' : 'paid', matchId);
       return true;
     });
   }

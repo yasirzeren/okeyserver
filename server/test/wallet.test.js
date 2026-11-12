@@ -43,7 +43,7 @@ test('account balance survives restart and pending entries are refunded once', a
   }
 });
 
-test('paid rooms require four accounts, debit once, and split team winnings', async () => {
+test('online room charges only its creator at creation and funds team winnings', async () => {
   const wallet = new Wallet(':memory:');
   const manager = new RoomManager({ to: () => ({ emit() {} }) }, wallet);
   try {
@@ -55,23 +55,23 @@ test('paid rooms require four accounts, debit once, and split team winnings', as
       carrotEntry: true, accountToken: users[0].token, settings,
     });
     const room = manager.rooms.get(created.code);
-    assert.equal((await manager.startGame(sockets[0])).ok, false);
+    assert.equal(wallet.profile(users[0].profile.id).carrots, 600);
     assert.equal((await manager.joinRoom(sockets[1], { password: 'test-pass', code: created.code, accountToken: users[0].token })).ok, false);
     for (let i = 1; i < 4; i++) {
       assert.equal((await manager.joinRoom(sockets[i], { password: 'test-pass', code: created.code, accountToken: users[i].token })).ok, true);
       manager.setReady(sockets[i], { ready: true });
     }
     const balances = () => users.map((u) => wallet.profile(u.profile.id).carrots);
-    assert.deepEqual(balances(), [1000, 1000, 1000, 1000]);
+    assert.deepEqual(balances(), [600, 1000, 1000, 1000]);
     assert.equal((await manager.startGame(sockets[0])).ok, true);
     assert.equal((await manager.startGame(sockets[0])).ok, false);
-    assert.deepEqual(balances(), [900, 900, 900, 900]);
+    assert.deepEqual(balances(), [600, 1000, 1000, 1000]);
     room.game.phase = 'finished';
     [10, 50, 10, 50].forEach((score, seat) => { room.game.players[seat].score = score; });
     room.afterChange();
     room.afterChange();
     manager.closeRoom(room, 'Test completed.');
-    assert.deepEqual(balances(), [1100, 900, 1100, 900]);
+    assert.deepEqual(balances(), [800, 1000, 1200, 1000]);
   } finally {
     for (const room of manager.rooms.values()) manager.closeRoom(room, 'Test completed.');
     clearInterval(manager.sweeper);
@@ -103,6 +103,23 @@ test('admin adjustment requires a role, records the actor, and is applied once',
     assert.equal(wallet.account(player.token).movements[0].amount, -100);
     wallet.setAdmin(admin.profile.id, false);
     assert.equal(wallet.adminAdjust(admin.token, change).ok, false);
+  } finally {
+    wallet.db.close();
+  }
+});
+test('daily reward is issued once per Turkish noon and catches up after downtime', async () => {
+  const wallet = new Wallet(':memory:');
+  try {
+    const a = wallet.register(credentials(21)).profile.id;
+    const noon = Date.UTC(2026, 10, 14, 9);
+    wallet.db.prepare("UPDATE movements SET time = ? WHERE ref = 'welcome'").run(noon - 1);
+    wallet.grantDaily(noon - 1);
+    assert.equal(wallet.profile(a).carrots, 1000);
+    wallet.grantDaily(noon);
+    wallet.grantDaily(noon + 1000);
+    assert.equal(wallet.profile(a).carrots, 2000);
+    wallet.grantDaily(noon + 2 * 86400000);
+    assert.equal(wallet.profile(a).carrots, 4000);
   } finally {
     wallet.db.close();
   }

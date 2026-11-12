@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const { Game } = require('./game');
 const bot = require('./bot');
+const { ROOM_COST, DAY_MS, latestRewardTime } = require('./carrot_policy');
 
 const INDICATOR_MS = 5000;
 const TURN_MS = 30000; // her oyuncunun sıra süresi
@@ -117,7 +118,7 @@ class Room {
       hostSeat: this.hostSeat,
       mySeat: m.seat,
       settings: this.settings,
-      carrotEntry: this.carrotEntry ? 100 : 0,
+      carrotEntry: ROOM_COST,
       started: this.started && !m.inLobby,
       waitingForLobby: this.started && !!m.inLobby,
       quickPlay: !!this.quickPlay,
@@ -229,31 +230,25 @@ class Room {
     if (member.seat !== this.hostSeat) return fail('Oyunu yalnızca oda sahibi başlatabilir.');
     const waiting = this.humans().filter((m) => m.seat !== this.hostSeat && !m.ready);
     if (waiting.length) return fail('Tüm oyuncular hazır olmalı.');
-    if (this.carrotEntry) {
-      if (this.connectedHumans().length !== 4) {
-        return fail('Havuçlu maç için dört oyuncu bağlı olmalı.');
-      }
-      const matchId = crypto.randomUUID();
+    if (this.quickPlay && this.connectedHumans().length !== 4) {
+      return fail('Hızlı Oyun için dört oyuncu bağlı olmalı.');
+    }
+    if (this.walletMatch) {
       const roster = [...this.members];
       this.starting = true;
-      let entry;
       try {
-        entry = await this.manager.wallet.hold(matchId, roster.map((m) => m.accountId));
-      } catch (error) {
-        // A failed acknowledgement can follow a committed transaction.
-        this.manager.settleWallet(matchId);
-        throw error;
+        if (!await this.manager.wallet.setRoomPlayers(
+          this.walletMatch, roster.map((m) => m?.accountId ?? null))) {
+          return fail('Masa ödemesi doğrulanamadı.');
+        }
       } finally {
         this.starting = false;
       }
-      if (!entry.ok) return entry;
       if (this.closed || this.hostSeat !== member.seat ||
-          roster.some((m, i) => m !== this.members[i] || !m.connected ||
-            (m.seat !== this.hostSeat && !m.ready))) {
-        this.manager.settleWallet(matchId);
-        return fail('Oyuncu durumu değişti. Giriş ücretleri iade edilir.');
+          roster.some((m, i) => m !== this.members[i] || (m &&
+            (!m.connected || (m.seat !== this.hostSeat && !m.ready))))) {
+        return fail('Oyuncu durumu değişti. Tekrar dene.');
       }
-      this.walletMatch = matchId;
     }
     const used = new Set(this.members.filter(Boolean).map((m) => m.name.toLowerCase()));
     const names = BOT_NAMES.filter((n) => !used.has(n.toLowerCase()));
@@ -475,10 +470,22 @@ class RoomManager {
     this.wallet = wallet;
     this.walletSettlements = new Map();
     this.walletMaintenance = false;
+    this.roomCreation = Promise.resolve();
     this.rooms = new Map();
     this.sessions = new Map(); // token -> {code, seat}
     this.sweeper = setInterval(() => this.sweep(), 60000);
-    if (this.sweeper.unref) this.sweeper.unref();
+    this.sweeper.unref();
+    if (this.wallet?.grantDaily) this.scheduleDailyReward();
+  }
+
+  scheduleDailyReward() {
+    const now = Date.now();
+    const next = latestRewardTime(now) + DAY_MS;
+    const timer = setTimeout(() => {
+      void this.maintainWallet();
+      this.scheduleDailyReward();
+    }, next - now);
+    timer.unref();
   }
 
   newToken() {
@@ -530,6 +537,11 @@ class RoomManager {
     if (this.walletMaintenance) return;
     this.walletMaintenance = true;
     try {
+      const cutoff = latestRewardTime();
+      if (this.wallet?.grantDaily && this.lastRewardCutoff !== cutoff) {
+        await this.wallet.grantDaily();
+        this.lastRewardCutoff = cutoff;
+      }
       if (this.wallet?.maintain) {
         const active = [...this.rooms.values()].map((r) => r.walletMatch).filter(Boolean);
         await this.wallet.maintain([...active, ...this.walletSettlements.keys()]);
@@ -555,7 +567,7 @@ class RoomManager {
         count: r.members.filter(Boolean).length, locked: true,
         assisted: r.settings.assisted, folding: r.settings.folding,
         totalRounds: r.settings.totalRounds,
-        ...(r.carrotEntry ? { carrotEntry: 100 } : {}) })) });
+        carrotEntry: ROOM_COST })) });
   }
 
   async createRoom(socket, d) {
@@ -564,17 +576,42 @@ class RoomManager {
     const account = await this.accountFor(d.accountToken);
     if (socket.connected === false) return fail('Bağlantı koptu.');
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
-    const paid = d.carrotEntry === true;
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
     if (!account) return fail('Online oynamak için hesabına giriş yap.');
-    if (paid && account.carrots < 100) return fail('En az 100 havucun olmalı.');
     const roomName = cleanName(d.roomName, 24, 'Oda');
     if (!this.validPassword(d.password)) return fail('Oda şifresi 4–64 karakter olmalı.');
-    const room = new Room(this, this.newCode(), roomName, normalizeSettings(d.settings));
-    room.passwordKey = crypto.randomBytes(32);
-    room.passwordDigest = this.passwordDigest(room, d.password);
-    room.carrotEntry = paid;
-    return this.addToRoom(socket, room, account, d.playerName);
+    return this.queueRoomCreation(() => {
+      const room = new Room(this, this.newCode(), roomName, normalizeSettings(d.settings));
+      room.passwordKey = crypto.randomBytes(32);
+      room.passwordDigest = this.passwordDigest(room, d.password);
+      return this.openPaidRoom(socket, room, account, d.playerName);
+    });
+  }
+
+  queueRoomCreation(action) {
+    const task = this.roomCreation.then(action);
+    this.roomCreation = task.catch(() => {});
+    return task;
+  }
+
+  async openPaidRoom(socket, room, account, playerName) {
+    if (socket.connected === false || this.ctx(socket)) return fail('Bağlantı veya oda durumu değişti.');
+    if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
+    const payment = crypto.randomUUID();
+    let charged;
+    try {
+      charged = await this.wallet.holdRoom(payment, account.id);
+    } catch (error) {
+      this.settleWallet(payment);
+      throw error;
+    }
+    if (!charged.ok) return charged;
+    if (socket.connected === false || this.ctx(socket)) {
+      this.settleWallet(payment);
+      return fail('Oda açılamadı. Ücret iade ediliyor.');
+    }
+    room.walletMatch = payment;
+    return this.addToRoom(socket, room, account, playerName);
   }
 
   validPassword(password) {
@@ -590,19 +627,19 @@ class RoomManager {
     if (socket.connected === false) return fail('Bağlantı koptu.');
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     if (!account) return fail('Hızlı Oyna için hesabına giriş yap.');
-    if (account.carrots < 100) return fail('En az 100 havucun olmalı.');
-    const quickRooms = [...this.rooms.values()].filter((room) => room.quickPlay && !room.closed);
-    if (quickRooms.some((room) => room.humans().some((m) => m.accountId === account.id))) {
-      return fail('Bu hesap zaten bir hızlı oyun odasında.');
-    }
-    const room = quickRooms.find((r) => !r.started && !r.starting &&
-      r.members.includes(null) && r.connectedHumans().length > 0);
-    if (room) return this.addToRoom(socket, room, account);
-    if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
-    const created = new Room(this, this.newCode(), 'Hızlı Oyun', normalizeSettings({}));
-    created.carrotEntry = true;
-    created.quickPlay = true;
-    return this.addToRoom(socket, created, account);
+    return this.queueRoomCreation(() => {
+      if (socket.connected === false || this.ctx(socket)) return fail('Bağlantı veya oda durumu değişti.');
+      const quickRooms = [...this.rooms.values()].filter((room) => room.quickPlay && !room.closed);
+      if (quickRooms.some((room) => room.humans().some((m) => m.accountId === account.id))) {
+        return fail('Bu hesap zaten bir hızlı oyun odasında.');
+      }
+      const room = quickRooms.find((r) => !r.started && !r.starting &&
+        r.members.includes(null) && r.connectedHumans().length > 0);
+      if (room) return this.addToRoom(socket, room, account);
+      const created = new Room(this, this.newCode(), 'Hızlı Oyun', normalizeSettings({}));
+      created.quickPlay = true;
+      return this.openPaidRoom(socket, created, account);
+    });
   }
 
   addToRoom(socket, room, account, playerName) {
@@ -638,8 +675,7 @@ class RoomManager {
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     if (room.closed || room.started || room.starting) return fail('Oda artık katılıma açık değil.');
     if (!account) return fail('Online oynamak için hesabına giriş yap.');
-    if (room.carrotEntry && account.carrots < 100) return fail('En az 100 havucun olmalı.');
-    if (room.carrotEntry && room.humans().some((m) => m.accountId === accountId)) {
+    if (room.humans().some((m) => m.accountId === accountId)) {
       return fail('Bu hesap zaten odada.');
     }
     return this.addToRoom(socket, room, account, d.playerName);

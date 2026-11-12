@@ -1,0 +1,25 @@
+name: Wake server for daily carrots
+
+on:
+  schedule:
+    # 08:56 UTC is 11:56 in Türkiye. Wake Render before the noon payout.
+    - cron: '56 8 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Wait for the Bunny 101 server
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if curl --fail --silent --show-error --max-time 20 \
+              https://okeyserver-erdi.onrender.com/health | grep -q '"ok":true'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
