@@ -562,12 +562,11 @@ class RoomManager {
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
     const account = await this.accountFor(d.accountToken);
-    const accountId = account?.id ?? null;
     if (socket.connected === false) return fail('Bağlantı koptu.');
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     const paid = d.carrotEntry === true;
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
-    if (paid && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
+    if (!account) return fail('Online oynamak için hesabına giriş yap.');
     if (paid && account.carrots < 100) return fail('En az 100 havucun olmalı.');
     const roomName = cleanName(d.roomName, 24, 'Oda');
     if (!this.validPassword(d.password)) return fail('Oda şifresi 4–64 karakter olmalı.');
@@ -638,7 +637,7 @@ class RoomManager {
     if (socket.connected === false) return fail('Bağlantı koptu.');
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     if (room.closed || room.started || room.starting) return fail('Oda artık katılıma açık değil.');
-    if (room.carrotEntry && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
+    if (!account) return fail('Online oynamak için hesabına giriş yap.');
     if (room.carrotEntry && account.carrots < 100) return fail('En az 100 havucun olmalı.');
     if (room.carrotEntry && room.humans().some((m) => m.accountId === accountId)) {
       return fail('Bu hesap zaten odada.');
@@ -659,13 +658,13 @@ class RoomManager {
     if (!s || !room || !m || m.token !== token) {
       return fail('Oturum bulunamadı (oda kapanmış veya sunucu yeniden başlamış olabilir).');
     }
-    if (room.carrotEntry) {
-      const accountId = await this.wallet.authenticate(d.accountToken);
-      if (accountId !== m.accountId) return fail('Bu odaya dönmek için aynı hesaba giriş yap.');
-      if (socket.connected === false || room.closed || room.members[s.seat] !== m ||
-          m.token !== token || this.ctx(socket)) {
-        return fail('Oturum artık geçerli değil.');
-      }
+    const accountId = await this.wallet?.authenticate(d.accountToken);
+    if (!accountId || accountId !== m.accountId) {
+      return fail('Bu odaya dönmek için aynı hesaba giriş yap.');
+    }
+    if (socket.connected === false || room.closed || room.members[s.seat] !== m ||
+        m.token !== token || this.ctx(socket)) {
+      return fail('Oturum artık geçerli değil.');
     }
     if (m.graceTimer) {
       clearTimeout(m.graceTimer);

@@ -781,6 +781,10 @@ class Game {
       this.finish(p, R.isWild(this.okey, id), kafaFinish);
       return ok('Oyun bitti.');
     }
+    if (this.deck.length === 0) {
+      this.finish(null);
+      return ok(`Deste bitti, el sona erdi.${extra}`);
+    }
     this.nextTurn();
     return ok(`Taş atıldı.${extra}`);
   }

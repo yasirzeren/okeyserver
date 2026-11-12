@@ -865,3 +865,19 @@ test('bot, gösterdiği taşı çift açarken joker olarak kullanır', () => {
   assert.strictEqual(plan.length, 5);
   assert.ok(plan.some((pair) => pair.includes(t(2, 8, 1))));
 });
+test('son deste taşı çekilince ilk geçerli atış eli bitirir', () => {
+  const g = newGame();
+  const drawn = t(0, 5);
+  const discarded = t(0, 6);
+  g.players[0].hand = [discarded];
+  g.current = 0;
+  g.step = 'draw';
+  g.deck = [drawn];
+  assert.equal(g.draw(0).ok, true);
+  assert.equal(g.phase, 'playing');
+  assert.equal(g.discard(0, discarded).ok, true);
+  assert.equal(g.phase, 'finished');
+  assert.equal(g.lastResult.winner, null);
+  assert.deepEqual(g.discards[0], [discarded]);
+  assert.equal(g.takeSide(1).ok, false);
+});
