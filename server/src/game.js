@@ -387,6 +387,7 @@ class Game {
         pairBy: this.pairOpenBy[p],
       };
       pl.opened = true;
+      this.openingSeriesTarget = this.requiredSeriesFor(p);
       this.pendingOpen = true;
       this.pendPairs = e.pairs;
       if (e.pairs) {
@@ -398,8 +399,7 @@ class Game {
       } else {
         pl.openType = 'series';
         pl.openPoints = e.points;
-        this.maxSeriesOpen = Math.max(this.maxSeriesOpen, e.points);
-        this.seriesOpenBy[p] = e.points;
+
         this.say(`${pl.name} ${e.points} açtı.`);
       }
       this.undo.push({ kind: 'open', tiles: used, meldIds: ids });
@@ -409,11 +409,14 @@ class Game {
       }
     } else {
       if (e.pairs) pl.pairCount += e.groups.length;
+      const openingPoints = this.pendingOpen && !e.pairs ? e.points : 0;
+      pl.openPoints += openingPoints;
       this.undo.push({
         kind: 'extra',
         tiles: used,
         meldIds: ids,
         pairs: e.pairs ? e.groups.length : 0,
+        openingPoints,
       });
       this.say(`${pl.name} yeni grup açtı.`);
     }
@@ -457,10 +460,7 @@ class Game {
     if (pl.opened) {
       if (pl.openType === 'series' && !series) return fail('Seri ile açtın, çift açamazsın.');
       if (pl.openType === 'pairs' && !pairs) return fail('Çift ile açtın, seri açamazsın.');
-    } else if (series) {
-      const req = this.requiredSeriesFor(p);
-      if (total < req) return fail(`Seri toplamı ${total}, açmak için en az ${req} gerekli.`);
-    } else {
+    } else if (pairs) {
       const req = this.requiredPairsFor(p);
       if (resolved.length < req) {
         return fail(`${resolved.length} çift var, açmak için en az ${req} çift gerekli.`);
@@ -490,6 +490,16 @@ class Game {
    * Yandan alınan taşla seri açılırsa 10, çift açılırsa 20 kat ceza yazılır.
    */
   commit(p) {
+    const player = this.players[p];
+    if (!this.pendPairs && player.openPoints < this.openingSeriesTarget) {
+      while (this.undo.length) this.undoLast(p);
+      const penalty = this.applyWrongOpenPenalty(p);
+      return ' Açılış taşları ıstakaya döndü.' + (penalty ? ' ' + penalty : '');
+    }
+    if (!this.pendPairs) {
+      this.maxSeriesOpen = Math.max(this.maxSeriesOpen, player.openPoints);
+      this.seriesOpenBy[p] = player.openPoints;
+    }
     let msg = '';
     const side = this.sideTaken;
     if (this.settings.sidePenalty && side !== null) {
@@ -533,6 +543,7 @@ class Game {
       if (u.tiles.includes(this.sideTaken)) this.sideTakenUsed = false;
       if (u.kind === 'extra') {
         pl.pairCount -= u.pairs;
+        pl.openPoints -= u.openingPoints;
       } else {
         pl.opened = false;
         pl.openType = null;
@@ -546,18 +557,7 @@ class Game {
       }
     } else if (u.kind === 'proc') {
       const m = this.melds.find((x) => x.id === u.meldId);
-      if (m) {
-        if (u.atEnd) {
-          m.tiles.pop();
-          m.slots.pop();
-          m.addedBy.pop();
-        } else {
-          m.tiles.shift();
-          m.slots.shift();
-          m.addedBy.shift();
-        }
-        if (u.jokerIndex !== undefined) m.slots[u.jokerIndex] = u.previousJokerSlot;
-      }
+      if (m) this.revertProcess(m, u);
       pl.hand.push(u.tile);
       pl.processedCount--;
       if (u.tile === this.sideTaken) this.sideTakenUsed = false;
@@ -601,16 +601,66 @@ class Game {
   }
 
   // ---------------------------------------------------------------- işleme
+  processedTilesFor(p) {
+    if (this.phase !== 'playing' || this.current !== p || this.step !== 'play') return [];
+    return this.undo.filter((move) => move.kind === 'proc').map((move) => move.tile);
+  }
+
+  revertProcess(meld, move) {
+    const index = move.atEnd ? meld.tiles.length - 1 : 0;
+    meld.tiles.splice(index, 1);
+    meld.slots.splice(index, 1);
+    meld.addedBy.splice(index, 1);
+    if (move.jokerIndex !== undefined) meld.slots[move.jokerIndex] = move.previousJokerSlot;
+  }
+
+  returnProcessedTile(p, tile) {
+    const guard = this.guard(p, 'play');
+    if (guard) return guard;
+    const index = this.undo.findIndex((move) => move.kind === 'proc' && move.tile === tile);
+    if (index < 0) return fail('Bu taş bu tur işlenmedi.');
+    const move = this.undo[index];
+    const meld = this.melds.find((m) => m.id === move.meldId);
+    const draft = { ...meld, tiles: [...meld.tiles], slots: [...meld.slots], addedBy: [...meld.addedBy] };
+    const later = [];
+    for (let i = this.undo.length - 1; i > index; i--) {
+      const next = this.undo[i];
+      if (next.meldId !== meld.id) continue;
+      if (next.kind !== 'proc') return fail('Bu perde daha sonra yapılan işlemi önce geri al.');
+      later.push(i);
+      this.revertProcess(draft, next);
+    }
+    this.revertProcess(draft, move);
+    const revised = new Map();
+    for (const i of later.reverse()) {
+      const next = this.undo[i].tile;
+      const ext = R.canExtend(draft, next, this.okey);
+      if (!ext) return fail('Bu taşı almadan önce ona bağlı taşı geri al.');
+      revised.set(i, this.recordProcess(draft, next, ext));
+      R.extend(draft, next, p, ext);
+    }
+    for (const [i, update] of revised) this.undo[i] = update;
+    this.undo.splice(index, 1);
+    Object.assign(meld, draft);
+    this.players[p].hand.push(tile);
+    this.players[p].processedCount--;
+    if (tile === this.sideTaken) this.sideTakenUsed = false;
+    return ok('Taş ıstakaya döndü.');
+  }
+
+  recordProcess(meld, tile, ext) {
+    const { jokerIndex } = ext;
+    return { kind: 'proc', tile, meldId: meld.id, atEnd: ext.atEnd, jokerIndex,
+      previousJokerSlot: jokerIndex === undefined ? undefined : meld.slots[jokerIndex] };
+  }
+
   applyProcess(p, id, meld, ext) {
-    const jokerIndex = ext.jokerIndex;
-    const previousJokerSlot = jokerIndex === undefined ? undefined : meld.slots[jokerIndex];
+    this.undo.push(this.recordProcess(meld, id, ext));
     R.extend(meld, id, p, ext);
     const pl = this.players[p];
     pl.hand.splice(pl.hand.indexOf(id), 1);
     pl.processedCount++;
     if (id === this.sideTaken) this.sideTakenUsed = true;
-    this.undo.push({ kind: 'proc', tile: id, meldId: meld.id, atEnd: ext.atEnd,
-      jokerIndex, previousJokerSlot });
     this.say(`${pl.name} taş işledi.`);
   }
 
@@ -873,6 +923,7 @@ class Game {
       canReturnSide: this.canReturnSide(seat),
       canGatherOpen: this.hasPendingOpen(seat),
       canGatherTiles: this.canGatherTiles(seat),
+      processedTiles: this.processedTilesFor(seat),
       penalties: this.penalties.map((e) => ({ ...e })),
       result: this.lastResult,
       myHand: [...this.players[seat].hand],

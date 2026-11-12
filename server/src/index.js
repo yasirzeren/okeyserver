@@ -113,6 +113,7 @@ io.on('connection', (socket) => {
   on('preview_open', (d) => manager.previewOpen(socket, d));
   on('open_groups', (d) => manager.openGroups(socket, d));
   on('process_tile', (d) => manager.processTile(socket, d));
+  on('return_processed_tile', (d) => manager.returnProcessedTile(socket, d));
   on('auto_process', () => manager.autoProcess(socket));
   on('process_pair', (d) => manager.processPair(socket, d));
   on('swap_okey', (d) => manager.swapOkey(socket, d));

@@ -894,6 +894,12 @@ class RoomManager {
     return this.act(socket, (g, s) => g.processTile(s, tile, d.meldId));
   }
 
+  returnProcessedTile(socket, d) {
+    const tile = parseTile(d.tile);
+    if (tile === null) return fail('Geçersiz taş.');
+    return this.act(socket, (g, s) => g.returnProcessedTile(s, tile));
+  }
+
   autoProcess(socket) {
     return this.act(socket, (g, s) => g.autoProcess(s));
   }

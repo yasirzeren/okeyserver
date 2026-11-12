@@ -202,12 +202,13 @@ test('yanlış açılış düzeltildikten sonra ceza uygulanmaz', () => {
   const g = newGame();
   g.players[0].hand = [t(0, 3), t(0, 4), t(0, 5), t(3, 1)];
   const r = g.openGroups(0, [[t(0, 3), t(0, 4), t(0, 5)]]);
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(g.players[0].opened, false);
-  assert.strictEqual(g.players[0].hand.length, 4);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(g.players[0].opened, true);
+  assert.strictEqual(g.players[0].hand.length, 1);
   assert.strictEqual(g.players[0].score, 0);
-  assert.strictEqual(g.turnAdjustMs, 0);
+  assert.strictEqual(g.turnAdjustMs, 20000);
   assert.strictEqual(g.penalties.length, 0);
+  assert.equal(g.gatherOpen(0).ok, true);
   g.players[0].hand = openHand();
   assert.strictEqual(g.openGroups(0, openGroups()).ok, true);
   assert.strictEqual(g.discard(0, t(3, 5)).ok, true);
@@ -450,11 +451,14 @@ test('Taşları İşle (otomatik) işlenebilenleri işler, okeyi tutar', () => {
   assert.ok(g.players[0].hand.includes(t(2, 9)));
 });
 
-test('katlamalı modda önceki açılışın altı reddedilir, katlamasızda kabul edilir', () => {
+test('katlamalı modda düşük açılış atışta geri alınır', () => {
   const a = newGame({ folding: true });
   a.maxSeriesOpen = 130;
   a.players[0].hand = openHand();
-  assert.strictEqual(a.openGroups(0, openGroups()).ok, false);
+  assert.equal(a.openGroups(0, openGroups()).ok, true);
+  assert.equal(a.discard(0, t(3, 5)).ok, true);
+  assert.equal(a.melds.length, 0);
+  assert.equal(a.players[0].opened, false);
 
   const b = newGame({ folding: false });
   b.maxSeriesOpen = 130;
@@ -880,4 +884,32 @@ test('son deste taşı çekilince ilk geçerli atış eli bitirir', () => {
   assert.equal(g.lastResult.winner, null);
   assert.deepEqual(g.discards[0], [discarded]);
   assert.equal(g.takeSide(1).ok, false);
+});
+
+test('düşük seri açılır, atışta ceza yazılır ve per geri gelir', () => {
+  const g = newGame();
+  const group = [t(0, 4), t(0, 5), t(0, 6)];
+  const discard = t(1, 2);
+  g.players[0].hand = [...group, discard];
+  assert.equal(g.openGroups(0, [group]).ok, true);
+  assert.deepEqual(g.melds[0].tiles, group);
+  assert.equal(g.penalties.length, 0);
+  assert.equal(g.discard(0, discard).ok, true);
+  assert.deepEqual(g.melds, []);
+  assert.deepEqual(g.players[0].hand, group);
+  assert.equal(g.penalties[0].points, 101);
+});
+
+test('işlenen taş geri alınırken diğer geçerli taşlar masada kalır', () => {
+  const g = newGame();
+  const meld = meldOf(g, 50, 1, [t(0, 5), t(0, 6), t(0, 7)]);
+  g.players[0].opened = true;
+  g.players[0].hand = [t(0, 4), t(0, 8), t(1, 2)];
+  assert.equal(g.processTile(0, t(0, 4), meld.id).ok, true);
+  assert.equal(g.processTile(0, t(0, 8), meld.id).ok, true);
+  assert.equal(g.returnProcessedTile(0, t(0, 4)).ok, true);
+  assert.ok(g.players[0].hand.includes(t(0, 4)));
+  assert.ok(meld.tiles.includes(t(0, 8)));
+  assert.equal(g.gatherTiles(0).ok, true);
+  assert.deepEqual(meld.tiles, [t(0, 5), t(0, 6), t(0, 7)]);
 });
