@@ -1,5 +1,5 @@
 'use strict';
-const { randomBytes, randomUUID, createHash, scrypt, timingSafeEqual } = require('node:crypto');
+const { randomBytes, randomInt, randomUUID, createHash, createHmac, scrypt, timingSafeEqual } = require('node:crypto');
 const { promisify } = require('node:util');
 const { PostgresDatabase } = require('./wallet_database');
 const { ENTRY_CARROTS } = require('./wallet');
@@ -8,6 +8,8 @@ const derive = promisify(scrypt);
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
 const validToken = (token) => typeof token === 'string' && /^[0-9a-f]{64}$/.test(token);
 const fail = (message) => ({ ok: false, message });
+const resetDigest = (secret, email, code) =>
+  createHmac('sha256', secret).update(email + '\0' + code).digest('hex');
 const MATCH_LEASE = 5 * 60 * 1000;
 
 class PostgresWallet {
@@ -22,6 +24,10 @@ class PostgresWallet {
       );
       CREATE TABLE IF NOT EXISTS sessions (
         hash TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), expires BIGINT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS password_resets (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id), digest TEXT NOT NULL,
+        issued BIGINT NOT NULL, expires BIGINT NOT NULL, attempts INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS matches (
         id TEXT PRIMARY KEY, account_ids JSONB NOT NULL, status TEXT NOT NULL, expires BIGINT NOT NULL
@@ -103,7 +109,68 @@ class PostgresWallet {
     const row = await this.db.get('SELECT * FROM accounts WHERE email = ?', email.trim().toLowerCase());
     const hash = await derive(password, row?.salt ?? '00000000000000000000000000000000', 64);
     if (!row || !timingSafeEqual(hash, Buffer.from(row.password, 'hex'))) return fail('E-posta veya şifre hatalı.');
-    return this.db.transaction((db) => this.session(db, row.id));
+    return this.db.transaction(async (db) => {
+      const current = await db.get('SELECT password, salt FROM accounts WHERE id = ?' + db.lock, row.id);
+      if (current?.password !== row.password || current?.salt !== row.salt) {
+        return fail('E-posta veya şifre hatalı.');
+      }
+      return this.session(db, row.id);
+    });
+  }
+
+  async sendResetCode({ email }, { secret, send }) {
+    email = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return fail('Geçerli bir e-posta gir.');
+    }
+    const code = String(randomInt(1000000)).padStart(6, '0');
+    const digest = resetDigest(secret, email, code);
+    const now = Date.now();
+    const accountId = await this.db.transaction(async (db) => {
+      const account = await db.get('SELECT id FROM accounts WHERE email = ?' + db.lock, email);
+      if (!account) return null;
+      const current = await db.get('SELECT issued FROM password_resets WHERE account_id = ?', account.id);
+      if (current && Number(current.issued) > now - 60000) return null;
+      await db.run(`
+        INSERT INTO password_resets (account_id, digest, issued, expires, attempts)
+        VALUES (?, ?, ?, ?, 0)
+        ON CONFLICT (account_id) DO UPDATE SET digest = EXCLUDED.digest,
+          issued = EXCLUDED.issued, expires = EXCLUDED.expires, attempts = 0
+      `, account.id, digest, now, now + 10 * 60000);
+      return account.id;
+    });
+    if (accountId) {
+      void Promise.resolve().then(() => send(email, code)).catch(() => {
+        console.error('Password reset email delivery failed.');
+      });
+    }
+    return { ok: true, message: 'Bu e-posta bir hesaba bağlıysa sıfırlama kodu gönderilir.' };
+  }
+
+  async resetPassword({ email, code, password }, secret) {
+    email = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const invalid = fail('Kod yanlış, kullanılmış veya süresi dolmuş.');
+    if (email.length > 254 || typeof code !== 'string' || !/^\d{6}$/.test(code)) return invalid;
+    if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
+      return fail('Şifre 8–128 karakter olmalı.');
+    }
+    return this.db.transaction(async (db) => {
+      const account = await db.get('SELECT id FROM accounts WHERE email = ?' + db.lock, email);
+      if (!account) return invalid;
+      const reset = await db.get('SELECT digest, expires, attempts FROM password_resets WHERE account_id = ?', account.id);
+      if (!reset || reset.attempts >= 5 || Number(reset.expires) <= Date.now()) return invalid;
+      const expected = resetDigest(secret, email, code);
+      if (!timingSafeEqual(Buffer.from(reset.digest, 'hex'), Buffer.from(expected, 'hex'))) {
+        await db.run('UPDATE password_resets SET attempts = attempts + 1 WHERE account_id = ?', account.id);
+        return invalid;
+      }
+      const salt = randomBytes(16).toString('hex');
+      const hash = (await derive(password, salt, 64)).toString('hex');
+      await db.run('UPDATE accounts SET salt = ?, password = ? WHERE id = ?', salt, hash, account.id);
+      await db.run('UPDATE password_resets SET attempts = 5 WHERE account_id = ?', account.id);
+      await db.run('DELETE FROM sessions WHERE account_id = ?', account.id);
+      return { ok: true, message: 'Şifren değiştirildi. Yeni şifrenle giriş yap.' };
+    });
   }
 
   async logout(token) {

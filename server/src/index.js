@@ -21,6 +21,26 @@ const io = new Server(server, {
   maxHttpBufferSize: 1e5,
 });
 const walletUnavailable = { ok: false, message: 'Hesap servisi henüz yapılandırılmadı.' };
+const resetSecret = process.env.BUNNY_RESET_SECRET;
+const mailKey = process.env.BUNNY_BREVO_API_KEY;
+const mailFrom = process.env.BUNNY_MAIL_FROM;
+const resetUnavailable = { ok: false, message: 'Şifre sıfırlama e-postası henüz yapılandırılmadı.' };
+
+async function sendResetEmail(email, code) {
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { 'api-key': mailKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sender: { name: 'Bunny 101', email: mailFrom },
+      to: [{ email }],
+      subject: 'Bunny 101 şifre sıfırlama kodu',
+      htmlContent: 'Şifre sıfırlama kodun: ' + code + '. Kod 10 dakika geçerli.',
+    }),
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error('Mail delivery failed');
+}
+
 let wallet;
 let manager;
 const authAttempts = new Map();
@@ -65,6 +85,12 @@ io.on('connection', (socket) => {
 
   on('account_register', (d) => wallet ? auth(socket, () => wallet.register(d)) : walletUnavailable);
   on('account_login', (d) => wallet ? auth(socket, () => wallet.login(d)) : walletUnavailable);
+  on('account_reset_send', (d) => wallet?.sendResetCode && resetSecret?.length >= 32 && mailKey && mailFrom
+    ? auth(socket, () => wallet.sendResetCode(d, { secret: resetSecret, send: sendResetEmail }))
+    : resetUnavailable);
+  on('account_reset_confirm', (d) => wallet?.resetPassword && resetSecret?.length >= 32 && mailKey && mailFrom
+    ? auth(socket, () => wallet.resetPassword(d, resetSecret))
+    : resetUnavailable);
   on('account_profile', (d) => wallet?.account(d.token) ?? walletUnavailable);
   on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
 

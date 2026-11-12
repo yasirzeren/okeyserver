@@ -54,6 +54,26 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     assert.equal((await wallet.account(users[1].token)).movements[0].amount, 500);
     await wallet.logout(users[1].token);
     assert.equal(await wallet.authenticate(users[1].token), null);
+    const email = 'p0@example.test';
+    const secret = 'test-secret-with-at-least-32-characters';
+    let code;
+    let sends = 0;
+    const delivery = { secret, send: async (_, sent) => { code = sent; sends++; } };
+    assert.equal((await wallet.sendResetCode({ email }, delivery)).ok, true);
+    assert.equal((await wallet.sendResetCode({ email }, delivery)).ok, true);
+    assert.equal((await wallet.sendResetCode({ email: 'unknown@example.test' }, delivery)).ok, true);
+    assert.equal(sends, 1);
+    assert.match(code, /^\d{6}$/);
+    const password = 'replacement-1234';
+    assert.equal((await wallet.resetPassword({ email, password, code: code === '000000' ? '000001' : '000000' }, secret)).ok, false);
+    assert.equal((await wallet.resetPassword({ email, password, code }, secret)).ok, true);
+    assert.equal((await wallet.resetPassword({ email, password, code }, secret)).ok, false);
+    assert.equal(await wallet.authenticate(users[0].token), null);
+    assert.equal((await wallet.login({ email, password: 'fixture-1234' })).ok, false);
+    const recovered = await wallet.login({ email, password });
+    assert.equal(recovered.profile.id, ids[0]);
+    assert.equal(recovered.profile.isAdmin, true);
+    assert.equal(recovered.profile.carrots, 1300);
   } finally {
     await wallet.db.close();
   }
