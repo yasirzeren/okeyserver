@@ -913,3 +913,18 @@ test('işlenen taş geri alınırken diğer geçerli taşlar masada kalır', () 
   assert.equal(g.gatherTiles(0).ok, true);
   assert.deepEqual(meld.tiles, [t(0, 5), t(0, 6), t(0, 7)]);
 });
+
+test('seri bir elde aynı uçta iki, toplam üç taş alır', () => {
+  const m = meldOf(newGame(), 1, 0, [t(0, 5), t(0, 6), t(0, 7)]);
+  function add(id, seat) {
+    const ext = R.canExtend(m, id, okey);
+    assert.ok(ext);
+    R.extend(m, id, seat, ext);
+  }
+  add(t(0, 8), 1);
+  add(t(0, 9), 2);
+  assert.strictEqual(R.canExtend(m, t(0, 10), okey), null);
+  assert.strictEqual(R.canExtend(m, t(2, 9), okey).atEnd, false);
+  add(t(0, 4), 3);
+  assert.strictEqual(R.canExtend(m, t(0, 3), okey), null);
+});

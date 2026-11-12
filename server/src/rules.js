@@ -145,19 +145,22 @@ function canExtend(meld, id, okey) {
     if (meld.kind === 'pair') return null;
     const wild = isWild(okey, id);
     if (meld.kind === 'run') {
-        if (meld.tiles.length >= 13) return null;
+        const addedBy = meld.addedBy ?? [];
+        if (meld.tiles.length >= 13 || addedBy.filter((seat) => seat >= 0).length >= 3) return null;
+        const canPrepend = addedBy.length < 2 || addedBy.slice(0, 2).some((seat) => seat < 0);
+        const canAppend = addedBy.length < 2 || addedBy.slice(-2).some((seat) => seat < 0);
         const c = meld.slots[0].color;
         const first = meld.slots[0].number;
         const last = meld.slots[meld.slots.length - 1].number;
         if (wild) {
-            if (last < 13) return { atEnd: true, slot: slot(c, last + 1) };
-            if (first > 1) return { atEnd: false, slot: slot(c, first - 1) };
+            if (canAppend && last < 13) return { atEnd: true, slot: slot(c, last + 1) };
+            if (canPrepend && first > 1) return { atEnd: false, slot: slot(c, first - 1) };
             return null;
         }
         const s = slotOf(okey, id);
         if (s.color !== c) return null;
-        if (last < 13 && s.number === last + 1) return { atEnd: true, slot: slot(c, last + 1) };
-        if (first > 1 && s.number === first - 1) return { atEnd: false, slot: slot(c, first - 1) };
+        if (canAppend && last < 13 && s.number === last + 1) return { atEnd: true, slot: slot(c, last + 1) };
+        if (canPrepend && first > 1 && s.number === first - 1) return { atEnd: false, slot: slot(c, first - 1) };
         return null;
     }
     // grup (set)
