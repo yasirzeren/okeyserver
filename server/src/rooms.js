@@ -118,7 +118,9 @@ class Room {
       mySeat: m.seat,
       settings: this.settings,
       carrotEntry: this.carrotEntry ? 100 : 0,
-      started: this.started,
+      started: this.started && !m.inLobby,
+      waitingForLobby: this.started && !!m.inLobby,
+      quickPlay: !!this.quickPlay,
       members: this.members
         .filter(Boolean)
         .map((x) => ({
@@ -170,7 +172,9 @@ class Room {
   broadcastState() {
     if (!this.game) return;
     this.v++;
-    for (const m of this.humans()) this.emitTo(m, 'state', this.stateFor(m));
+    for (const m of this.humans()) {
+      if (!m.inLobby) this.emitTo(m, 'state', this.stateFor(m));
+    }
   }
 
   afterChange() {
@@ -546,9 +550,9 @@ class RoomManager {
   // ------------------------------------------------------------------ lobi
   listRooms() {
     return ok('', { rooms: [...this.rooms.values()]
-      .filter((r) => !r.started && !r.closed && r.connectedHumans().length > 0)
+      .filter((r) => !r.quickPlay && !r.started && !r.closed && r.connectedHumans().length > 0)
       .map((r) => ({ code: r.code, name: r.name,
-        count: r.members.filter(Boolean).length,
+        count: r.members.filter(Boolean).length, locked: true,
         assisted: r.settings.assisted, folding: r.settings.folding,
         totalRounds: r.settings.totalRounds,
         ...(r.carrotEntry ? { carrotEntry: 100 } : {}) })) });
@@ -565,27 +569,70 @@ class RoomManager {
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
     if (paid && !accountId) return fail('Havuçlu oda için hesabına giriş yap.');
     if (paid && account.carrots < 100) return fail('En az 100 havucun olmalı.');
-    const name = accountId ? account.name : cleanName(d.playerName, 14, 'Oyuncu');
     const roomName = cleanName(d.roomName, 24, 'Oda');
+    if (!this.validPassword(d.password)) return fail('Oda şifresi 4–64 karakter olmalı.');
     const room = new Room(this, this.newCode(), roomName, normalizeSettings(d.settings));
-    const token = this.newToken();
+    room.passwordKey = crypto.randomBytes(32);
+    room.passwordDigest = this.passwordDigest(room, d.password);
     room.carrotEntry = paid;
-    const m = room.addHuman(token, name, socket.id, accountId);
-    room.hostSeat = m.seat;
-    this.rooms.set(room.code, room);
-    this.sessions.set(token, { code: room.code, seat: m.seat });
+    return this.addToRoom(socket, room, account, d.playerName);
+  }
+
+  validPassword(password) {
+    return typeof password === 'string' && password.trim().length >= 4 && password.length <= 64;
+  }
+
+  passwordDigest(room, password) {
+    return crypto.createHmac('sha256', room.passwordKey).update(password).digest();
+  }
+
+  async quickPlay(socket, d) {
+    const account = await this.accountFor(d.accountToken);
+    if (socket.connected === false) return fail('Bağlantı koptu.');
+    if (this.ctx(socket)) return fail('Zaten bir odadasın.');
+    if (!account) return fail('Hızlı Oyna için hesabına giriş yap.');
+    if (account.carrots < 100) return fail('En az 100 havucun olmalı.');
+    const quickRooms = [...this.rooms.values()].filter((room) => room.quickPlay && !room.closed);
+    if (quickRooms.some((room) => room.humans().some((m) => m.accountId === account.id))) {
+      return fail('Bu hesap zaten bir hızlı oyun odasında.');
+    }
+    const room = quickRooms.find((r) => !r.started && !r.starting &&
+      r.members.includes(null) && r.connectedHumans().length > 0);
+    if (room) return this.addToRoom(socket, room, account);
+    if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
+    const created = new Room(this, this.newCode(), 'Hızlı Oyun', normalizeSettings({}));
+    created.carrotEntry = true;
+    created.quickPlay = true;
+    return this.addToRoom(socket, created, account);
+  }
+
+  addToRoom(socket, room, account, playerName) {
+    const token = this.newToken();
+    const name = account ? account.name : cleanName(playerName, 14, 'Oyuncu');
+    const member = room.addHuman(token, name, socket.id, account?.id ?? null);
+    if (!member) return fail('Oda dolu.');
+    if (!this.rooms.has(room.code)) {
+      room.hostSeat = member.seat;
+      this.rooms.set(room.code, room);
+    }
+    this.sessions.set(token, { code: room.code, seat: member.seat });
     socket.data.token = token;
+    room.touch();
+    room.emitTo(member, 'chat_history', room.chat);
     room.broadcastRoom();
-    return ok('Oda kuruldu.', { token, code: room.code, seat: m.seat });
+    return ok('Odaya girildi.', { token, code: room.code, seat: member.seat });
   }
 
   async joinRoom(socket, d) {
     if (this.ctx(socket)) return fail('Zaten bir odadasın.');
     const code = cleanText(d.code).toUpperCase();
     const room = this.rooms.get(code);
-    if (!room) return fail('Oda bulunamadı.');
+    if (!room || room.quickPlay) return fail('Oda bulunamadı.');
+    if (!this.validPassword(d.password) ||
+        !crypto.timingSafeEqual(room.passwordDigest, this.passwordDigest(room, d.password))) {
+      return fail('Oda şifresi yanlış.');
+    }
     if (room.started) return fail('Oyun başlamış, odaya katılamazsın.');
-    const token = this.newToken();
     const account = await this.accountFor(d.accountToken);
     const accountId = account?.id ?? null;
     if (socket.connected === false) return fail('Bağlantı koptu.');
@@ -596,15 +643,7 @@ class RoomManager {
     if (room.carrotEntry && room.humans().some((m) => m.accountId === accountId)) {
       return fail('Bu hesap zaten odada.');
     }
-    const name = accountId ? account.name : cleanName(d.playerName, 14, 'Oyuncu');
-    const m = room.addHuman(token, name, socket.id, accountId);
-    if (!m) return fail('Oda dolu.');
-    this.sessions.set(token, { code: room.code, seat: m.seat });
-    socket.data.token = token;
-    room.touch();
-    room.emitTo(m, 'chat_history', room.chat);
-    room.broadcastRoom();
-    return ok('Odaya girildi.', { token, code: room.code, seat: m.seat });
+    return this.addToRoom(socket, room, account, d.playerName);
   }
 
   async resume(socket, d) {
@@ -638,7 +677,7 @@ class RoomManager {
     room.touch();
     room.emitTo(m, 'room', room.roomInfo(m));
     room.emitTo(m, 'chat_history', room.chat);
-    if (room.game) room.emitTo(m, 'state', room.stateFor(m));
+    if (room.game && !m.inLobby) room.emitTo(m, 'state', room.stateFor(m));
     room.broadcastRoom();
     if (room.game) room.afterChange();
     return ok('Odaya dönüldü.', { code: room.code, seat: m.seat });
@@ -660,7 +699,7 @@ class RoomManager {
     if (c.member.seat !== c.room.hostSeat) {
       return fail('Kuralları yalnızca oda sahibi değiştirebilir.');
     }
-    if (c.room.started) return fail('Oyun başladıktan sonra kurallar değiştirilemez.');
+    if (c.room.started || c.room.starting) return fail('Oyun başladıktan sonra kurallar değiştirilemez.');
     c.room.settings = normalizeSettings(d.settings);
     c.room.touch();
     c.room.broadcastRoom();
@@ -672,6 +711,41 @@ class RoomManager {
     if (!c) return fail('Bir odada değilsin.');
     c.room.touch();
     return c.room.startGame(c.member);
+  }
+
+  returnLobby(socket) {
+    const c = this.ctx(socket);
+    if (!c) return fail('Bir odada değilsin.');
+    const { room, member } = c;
+    if (!room.started && !room.game) return ok();
+    if (!room.game?.matchOver()) return fail('Maç henüz bitmedi.');
+    member.inLobby = true;
+    room.touch();
+    if (!this.resetLobbyWhenReady(room)) room.broadcastRoom();
+    return ok();
+  }
+
+  resetLobbyWhenReady(room) {
+    if (!room.game?.matchOver() ||
+        !room.connectedHumans().some((member) => member.inLobby) ||
+        room.connectedHumans().some((member) => !member.inLobby)) return false;
+    room.clearTimer();
+    room.game = null;
+    room.started = false;
+    room.nextReady.clear();
+    room.members = room.members.map((member) => {
+      if (!member) return null;
+      if (member.isBot || !member.connected) {
+        if (member.token) this.sessions.delete(member.token);
+        return null;
+      }
+      member.ready = false;
+      member.inLobby = false;
+      return member;
+    });
+    if (!room.members[room.hostSeat]) room.hostSeat = room.humans()[0].seat;
+    room.broadcastRoom();
+    return true;
   }
 
   leaveRoom(socket) {
@@ -698,8 +772,10 @@ class RoomManager {
       return ok();
     }
     if (room.hostSeat === member.seat) room.hostSeat = room.humans()[0].seat;
-    room.broadcastRoom();
-    room.afterChange();
+    if (!this.resetLobbyWhenReady(room)) {
+      room.broadcastRoom();
+      room.afterChange();
+    }
     return ok();
   }
 
@@ -731,7 +807,7 @@ class RoomManager {
       }, LOBBY_GRACE_MS);
       if (member.graceTimer.unref) member.graceTimer.unref();
       room.broadcastRoom();
-    } else {
+    } else if (!this.resetLobbyWhenReady(room)) {
       room.afterChange(); // diğer oyuncular bağlantı durumunu görür, sıra zamanlayıcısı güncellenir
     }
   }

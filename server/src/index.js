@@ -73,6 +73,7 @@ io.on('connection', (socket) => {
 
   on('list_rooms', () => manager.listRooms());
   on('create_room', (d) => manager.createRoom(socket, d));
+  on('quick_play', (d) => manager.quickPlay(socket, d));
   on('join_room', (d) => manager.joinRoom(socket, d));
   on('resume', (d) => manager.resume(socket, d));
   on('set_ready', (d) => manager.setReady(socket, d));
@@ -94,6 +95,7 @@ io.on('connection', (socket) => {
   on('discard', (d) => manager.discard(socket, d));
   on('show_indicator', (d) => manager.showIndicator(socket, d));
   on('place_indicator', () => manager.placeIndicator(socket));
+  on('return_lobby', () => manager.returnLobby(socket));
   on('ready_next', () => manager.readyNext(socket));
 
   socket.on('disconnect', () => manager.onDisconnect(socket));

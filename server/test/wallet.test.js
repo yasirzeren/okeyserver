@@ -50,15 +50,15 @@ test('paid rooms require four accounts, debit once, and split team winnings', as
     const sockets = [0, 1, 2, 3].map((i) => ({ id: String(i), data: {} }));
     const users = sockets.map((_, i) => wallet.register(credentials(i)));
     const settings = { partners: true, indicatorRule: false, totalRounds: 1 };
-    assert.equal((await manager.createRoom(sockets[0], { carrotEntry: true })).ok, false);
-    const created = await manager.createRoom(sockets[0], {
+    assert.equal((await manager.createRoom(sockets[0], { password: 'test-pass', carrotEntry: true })).ok, false);
+    const created = await manager.createRoom(sockets[0], { password: 'test-pass',
       carrotEntry: true, accountToken: users[0].token, settings,
     });
     const room = manager.rooms.get(created.code);
     assert.equal((await manager.startGame(sockets[0])).ok, false);
-    assert.equal((await manager.joinRoom(sockets[1], { code: created.code, accountToken: users[0].token })).ok, false);
+    assert.equal((await manager.joinRoom(sockets[1], { password: 'test-pass', code: created.code, accountToken: users[0].token })).ok, false);
     for (let i = 1; i < 4; i++) {
-      assert.equal((await manager.joinRoom(sockets[i], { code: created.code, accountToken: users[i].token })).ok, true);
+      assert.equal((await manager.joinRoom(sockets[i], { password: 'test-pass', code: created.code, accountToken: users[i].token })).ok, true);
       manager.setReady(sockets[i], { ready: true });
     }
     const balances = () => users.map((u) => wallet.profile(u.profile.id).carrots);
