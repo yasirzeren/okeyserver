@@ -112,6 +112,20 @@ function analyzeGroup(tiles, okey) {
     return run.points >= set.points ? run : set;
 }
 
+/** Preserve resolved joker values while breaking long runs into opening melds. */
+function splitOpeningGroup(group) {
+    if (group.kind !== 'run' || group.tiles.length < 6) return [group];
+    const groups = [];
+    let start = 0;
+    while (group.tiles.length - start >= 6) {
+        const end = start + 3;
+        groups.push(resolved(group.kind, group.tiles.slice(start, end), group.slots.slice(start, end)));
+        start = end;
+    }
+    groups.push(resolved(group.kind, group.tiles.slice(start), group.slots.slice(start)));
+    return groups;
+}
+
 /** Çift: birbirinin aynısı iki taş. Okey bir taşın yerine geçebilir. */
 function analyzePair(tiles, okey, indicatorId = null) {
     if (tiles.length !== 2) return null;
@@ -217,6 +231,7 @@ module.exports = {
     slotOf,
     pointsOf,
     analyzeGroup,
+    splitOpeningGroup,
     analyzePair,
     canExtend,
     extend,

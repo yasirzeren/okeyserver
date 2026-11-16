@@ -454,7 +454,7 @@ class Game {
       if (!r) {
         return fail(`Geçersiz ${pairs ? 'çift' : 'seri'}: ${g.map(R.tileName).join(', ')}.`);
       }
-      resolved.push(r);
+      resolved.push(...R.splitOpeningGroup(r));
     }
     const total = resolved.reduce((a, r) => a + r.points, 0);
     if (pl.opened) {
@@ -664,11 +664,21 @@ class Game {
     this.say(`${pl.name} taş işledi.`);
   }
 
+  guardProcessing(p) {
+    const turn = this.guard(p, 'play');
+    if (turn) return turn;
+    const player = this.players[p];
+    if (!player.opened) return fail('Taş işlemek için önce açmalısın.');
+    if (this.pendingOpen && !this.pendPairs && player.openPoints < this.openingSeriesTarget) {
+      return fail('Taş işlemek için en az ' + this.openingSeriesTarget + ' puan açmalısın.');
+    }
+    return null;
+  }
+
   processTile(p, id, meldId) {
-    const g = this.guard(p, 'play');
+    const g = this.guardProcessing(p);
     if (g) return g;
     const pl = this.players[p];
-    if (!pl.opened) return fail('Taş işlemek için önce açmalısın.');
     if (!pl.hand.includes(id)) return fail('Bu taş elinde değil.');
     const meld = this.melds.find((m) => m.id === meldId);
     if (!meld) return fail('Hedef grup bulunamadı.');
@@ -683,10 +693,9 @@ class Game {
 
   /** Taşları İşle: işlenebilen her taşı en uygun yere kendisi işler (okeyi tutar). */
   autoProcess(p) {
-    const g = this.guard(p, 'play');
+    const g = this.guardProcessing(p);
     if (g) return g;
     const pl = this.players[p];
-    if (!pl.opened) return fail('Taş işlemek için önce açmalısın.');
     let n = 0;
     let again = true;
     while (again && pl.hand.length > 1) {
@@ -717,10 +726,9 @@ class Game {
 
   /** Seri açan oyuncu elindeki bir çifti, çift açmış rakibin bölmesine işler. */
   processPair(p, a, b, target) {
-    const g = this.guard(p, 'play');
+    const g = this.guardProcessing(p);
     if (g) return g;
     const pl = this.players[p];
-    if (!pl.opened) return fail('Çift işlemek için önce açmalısın.');
     if (pl.openType !== 'series') return fail('Yalnızca seri açan oyuncu çift işleyebilir.');
     if (!Number.isInteger(target) || target < 0 || target > 3 || target === p) {
       return fail('Geçersiz hedef.');
@@ -759,10 +767,9 @@ class Game {
 
   /** Okey alma: masadaki okeyin yerini tutan gerçek taşı verip okeyi eline alır. */
   swapOkey(p, id, meldId, index) {
-    const g = this.guard(p, 'play');
+    const g = this.guardProcessing(p);
     if (g) return g;
     const pl = this.players[p];
-    if (!pl.opened) return fail('Okey almak için önce açmalısın.');
     if (!pl.hand.includes(id)) return fail('Bu taş elinde değil.');
     const m = this.melds.find((x) => x.id === meldId);
     if (!m) return fail('Hedef grup bulunamadı.');

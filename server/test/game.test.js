@@ -962,3 +962,41 @@ test('kullanılan yan taşı son taşla biten düşük açılışı engellemez',
   assert.equal(g.discard(0, t(1, 2)).ok, true);
   assert.equal(g.lastResult.winner, 0);
 });
+
+test('uzun açılış serileri okey ve puan değerleri korunarak bölünür', () => {
+  const sizes = [[3,3], [3,4], [3,5], [3,3,3], [3,3,4], [3,3,5], [3,3,3,3], [3,3,3,4]];
+  for (const [index, expected] of sizes.entries()) {
+    const game = newGame();
+    const count = index + 6;
+    const start = count === 6 ? 3 : 1;
+    const numbers = Array.from({ length: count }, (_, i) => start + i);
+    const tiles = numbers.map((number, i) => i === 2 ? t(2, 9) : t(0, number));
+    game.players[0].hand = [...tiles, t(1, 13)];
+    assert.equal(game.openGroups(0, [tiles]).ok, true);
+    assert.deepEqual(game.melds.map((meld) => meld.tiles.length), expected);
+    assert.deepEqual(game.melds.flatMap((meld) => meld.tiles), tiles);
+    assert.deepEqual(game.melds.flatMap((meld) => meld.slots.map((slot) => slot.number)), numbers);
+    assert.equal(game.players[0].openPoints, numbers.reduce((sum, value) => sum + value, 0));
+  }
+});
+
+test('bekleyen açılış eşiğin altındayken hiçbir işleme kabul edilmez', () => {
+  const g = newGame({ folding: true, partners: true, partnerFolding: false });
+  g.seriesOpenBy = [0, 119, 140, 0];
+  const red = [10, 11, 12, 13].map(n => t(0, n));
+  const blue = [10, 11, 12, 13].map(n => t(1, n));
+  const yellow = [8, 9, 10].map(n => t(3, n));
+  const extra = [t(0, 5), t(1, 5), t(3, 5)];
+  const target = meldOf(g, 50, 1, [t(0, 6), t(0, 7), t(0, 8)]);
+  const tile = t(0, 9);
+  g.players[0].hand = [...red, ...blue, ...yellow, ...extra, tile, t(1, 2)];
+  assert.equal(g.openGroups(0, [red, blue, yellow]).ok, true);
+  assert.equal(g.players[0].openPoints, 119);
+  assert.match(g.processTile(0, tile, target.id).message, /120/);
+  assert.match(g.autoProcess(0).message, /120/);
+  assert.match(g.processPair(0, tile, tile, 1).message, /120/);
+  assert.match(g.swapOkey(0, tile, target.id, 0).message, /120/);
+  assert.ok(g.players[0].hand.includes(tile));
+  assert.equal(g.openGroups(0, [extra]).ok, true);
+  assert.equal(g.processTile(0, tile, target.id).ok, true);
+});
