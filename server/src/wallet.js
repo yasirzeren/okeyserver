@@ -189,8 +189,11 @@ class Wallet {
   account(token) {
     const id = this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');
-    return { ok: true, profile: { ...this.profile(id), isAdmin: this.isAdmin(id) }, movements: this.db.prepare(
-      'SELECT amount, reason, time FROM movements WHERE account_id = ? ORDER BY time DESC, rowid DESC LIMIT 20'
+    const pendingDaily = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0"
+    ).get(id).count;
+    return { ok: true, profile: { ...this.profile(id), isAdmin: this.isAdmin(id) }, pendingDaily, movements: this.db.prepare(
+      'SELECT amount, reason, time FROM movements WHERE account_id = ? AND amount <> 0 ORDER BY time DESC, rowid DESC LIMIT 20'
     ).all(id) };
   }
 
@@ -215,6 +218,18 @@ class Wallet {
     });
   }
 
+  claimDaily(token) {
+    const id = this.authenticate(token);
+    if (!id) return fail('Oturum açman gerekiyor.');
+    this.transaction(() => {
+      const count = this.db.prepare(
+        "UPDATE movements SET amount = ?, time = ? WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0"
+      ).run(DAILY_CARROTS, Date.now(), id).changes;
+      if (count) this.db.prepare('UPDATE accounts SET carrots = carrots + ? WHERE id = ?').run(count * DAILY_CARROTS, id);
+    });
+    return this.account(token);
+  }
+
   grantDaily(now = Date.now()) {
     const latest = latestRewardTime(now);
     return this.transaction(() => {
@@ -222,7 +237,8 @@ class Wallet {
       for (let cutoff = (previous ?? latest - DAY_MS) + DAY_MS; cutoff <= latest; cutoff += DAY_MS) {
         const accounts = this.db.prepare("SELECT account_id FROM movements WHERE ref = 'welcome' AND time <= ? ORDER BY account_id").all(cutoff);
         for (const { account_id: id } of accounts) {
-          this.credit(id, `daily:${cutoff}`, DAILY_CARROTS, 'Günlük havuç hediyesi');
+          this.db.prepare('INSERT OR IGNORE INTO movements VALUES (?, ?, 0, ?, ?)')
+            .run(id, `daily:${cutoff}`, 'Günlük havuç hediyesi', cutoff);
         }
       }
       if (previous == null || previous < latest) {
@@ -231,17 +247,18 @@ class Wallet {
     });
   }
 
-  hold(matchId, ids) {
+  hold(matchId, ids, stake = null) {
     if (ids.length !== 4 || ids.some((id) => !id) || new Set(ids).size !== 4) {
       return fail('Havuçlu maç için dört farklı hesap gerekli.');
     }
     return this.transaction(() => {
+      const cost = stake === null ? ENTRY_CARROTS : stake + stake / 20;
       if (this.db.prepare('SELECT 1 FROM matches WHERE id = ?').get(matchId)) return fail('Maç zaten başlatıldı.');
-      if (ids.some((id) => (this.profile(id)?.carrots ?? 0) < ENTRY_CARROTS)) {
-        return fail('Tüm oyuncuların en az 100 havucu olmalı.');
-      }
-      this.db.prepare("INSERT INTO matches VALUES (?, ?, 'held')").run(matchId, JSON.stringify(ids));
-      for (const id of ids) this.credit(id, `entry:${matchId}`, -ENTRY_CARROTS, 'Masa giriş ücreti');
+      const insufficient = ids.map((id) => ({ id, balance: this.profile(id)?.carrots ?? 0 }))
+        .filter((player) => player.balance < cost);
+      if (insufficient.length) return { ...fail('Bazı oyuncuların havucu yetersiz.'), insufficient };
+      this.db.prepare("INSERT INTO matches VALUES (?, ?, 'held')").run(matchId, JSON.stringify(stake === null ? ids : { stake, players: ids }));
+      for (const id of ids) this.credit(id, `entry:${matchId}`, -cost, 'Masa giriş ücreti');
       return { ok: true };
     });
   }
@@ -251,16 +268,17 @@ class Wallet {
       const match = this.db.prepare('SELECT * FROM matches WHERE id = ?').get(matchId);
       if (match?.status !== 'held') return false;
       const entry = JSON.parse(match.account_ids);
-      const sponsored = !Array.isArray(entry);
-      const ids = sponsored ? entry.players : entry;
+      const wager = !Array.isArray(entry) && Number.isInteger(entry.stake);
+      const sponsored = !Array.isArray(entry) && !wager;
+      const ids = sponsored || wager ? entry.players : entry;
       const payers = sponsored ? [entry.payer] : ids;
-      const cost = sponsored ? ROOM_COST : ENTRY_CARROTS;
+      const cost = sponsored ? ROOM_COST : wager ? entry.stake + entry.stake / 20 : ENTRY_CARROTS;
       const recipients = ids.filter((id, seat) => id && winners.includes(seat));
       const refund = !recipients.length && (!sponsored || !winners.length);
       if (refund) {
         for (const id of payers) this.credit(id, `refund:${matchId}`, cost, 'İptal edilen maçın iadesi');
       } else if (recipients.length) {
-        const pot = payers.length * cost;
+        const pot = payers.length * (wager ? entry.stake : cost);
         const share = Math.floor(pot / recipients.length);
         recipients.forEach((id, i) => this.credit(id, `win:${matchId}`,
           share + (i < pot % recipients.length ? 1 : 0), 'Maç ödülü'));

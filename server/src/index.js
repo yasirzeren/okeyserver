@@ -91,6 +91,7 @@ io.on('connection', (socket) => {
   on('account_reset_confirm', (d) => wallet?.resetPassword && resetSecret?.length >= 32 && mailKey && mailFrom
     ? auth(socket, () => wallet.resetPassword(d, resetSecret))
     : resetUnavailable);
+  on('claim_daily', (d) => wallet?.claimDaily(d.token) ?? walletUnavailable);
   on('account_profile', (d) => wallet?.account(d.token) ?? walletUnavailable);
   on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
 
@@ -98,6 +99,7 @@ io.on('connection', (socket) => {
   on('admin_adjust', (d) => wallet?.adminAdjust(d.token, d) ?? walletUnavailable);
 
   on('list_rooms', () => manager.listRooms());
+  on('select_seat', (d) => manager.selectSeat(socket, d));
   on('create_room', (d) => manager.createRoom(socket, d));
   on('quick_play', (d) => manager.quickPlay(socket, d));
   on('join_room', (d) => manager.joinRoom(socket, d));

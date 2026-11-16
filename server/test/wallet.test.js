@@ -43,7 +43,7 @@ test('account balance survives restart and pending entries are refunded once', a
   }
 });
 
-test('online room charges only its creator at creation and funds team winnings', async () => {
+test('online room rejects 104, charges four wallets once and pays team winnings', async () => {
   const wallet = new Wallet(':memory:');
   const manager = new RoomManager({ to: () => ({ emit() {} }) }, wallet);
   try {
@@ -55,23 +55,32 @@ test('online room charges only its creator at creation and funds team winnings',
       carrotEntry: true, accountToken: users[0].token, settings,
     });
     const room = manager.rooms.get(created.code);
-    assert.equal(wallet.profile(users[0].profile.id).carrots, 600);
+    assert.equal(wallet.profile(users[0].profile.id).carrots, 1000);
     assert.equal((await manager.joinRoom(sockets[1], { password: 'test-pass', code: created.code, accountToken: users[0].token })).ok, false);
+    wallet.credit(users[1].profile.id, 'test-poor', -896, 'Test');
+    assert.match((await manager.joinRoom(sockets[1], { password: 'test-pass', code: created.code, accountToken: users[1].token })).message, /105.*104/);
+    wallet.credit(users[1].profile.id, 'test-restored', 896, 'Test');
     for (let i = 1; i < 4; i++) {
       assert.equal((await manager.joinRoom(sockets[i], { password: 'test-pass', code: created.code, accountToken: users[i].token })).ok, true);
       manager.setReady(sockets[i], { ready: true });
     }
     const balances = () => users.map((u) => wallet.profile(u.profile.id).carrots);
-    assert.deepEqual(balances(), [600, 1000, 1000, 1000]);
-    assert.equal((await manager.startGame(sockets[0])).ok, true);
+    wallet.credit(users[1].profile.id, 'test-depleted', -896, 'Test');
     assert.equal((await manager.startGame(sockets[0])).ok, false);
-    assert.deepEqual(balances(), [600, 1000, 1000, 1000]);
+    assert.deepEqual(balances(), [1000, 104, 1000, 1000]);
+    assert.equal(room.members[1], null);
+    wallet.credit(users[1].profile.id, 'test-refunded', 896, 'Test');
+    assert.equal((await manager.joinRoom(sockets[1], { password: 'test-pass', code: created.code, accountToken: users[1].token })).ok, true);
+    manager.setReady(sockets[1], { ready: true });
+    const starts = await Promise.all([manager.startGame(sockets[0]), manager.startGame(sockets[0])]);
+    assert.equal(starts.filter((result) => result.ok).length, 1);
+    assert.deepEqual(balances(), [895, 895, 895, 895]);
     room.game.phase = 'finished';
     [10, 50, 10, 50].forEach((score, seat) => { room.game.players[seat].score = score; });
     room.afterChange();
     room.afterChange();
     manager.closeRoom(room, 'Test completed.');
-    assert.deepEqual(balances(), [800, 1000, 1200, 1000]);
+    assert.deepEqual(balances(), [1095, 895, 1095, 895]);
   } finally {
     for (const room of manager.rooms.values()) manager.closeRoom(room, 'Test completed.');
     clearInterval(manager.sweeper);
@@ -110,16 +119,20 @@ test('admin adjustment requires a role, records the actor, and is applied once',
 test('daily reward is issued once per Turkish noon and catches up after downtime', async () => {
   const wallet = new Wallet(':memory:');
   try {
-    const a = wallet.register(credentials(21)).profile.id;
+    const { token, profile: {id: a} } = wallet.register(credentials(21));
     const noon = Date.UTC(2026, 10, 14, 9);
     wallet.db.prepare("UPDATE movements SET time = ? WHERE ref = 'welcome'").run(noon - 1);
     wallet.grantDaily(noon - 1);
     assert.equal(wallet.profile(a).carrots, 1000);
     wallet.grantDaily(noon);
     wallet.grantDaily(noon + 1000);
-    assert.equal(wallet.profile(a).carrots, 2000);
+    assert.equal(wallet.profile(a).carrots, 1000);
+    assert.equal(wallet.account(token).pendingDaily, 1);
+    assert.equal(wallet.claimDaily(token).profile.carrots, 2000);
+    assert.equal(wallet.claimDaily(token).profile.carrots, 2000);
     wallet.grantDaily(noon + 2 * 86400000);
-    assert.equal(wallet.profile(a).carrots, 4000);
+    assert.equal(wallet.account(token).pendingDaily, 2);
+    assert.equal(wallet.claimDaily(token).profile.carrots, 4000);
   } finally {
     wallet.db.close();
   }

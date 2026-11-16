@@ -890,13 +890,13 @@ test('düşük seri açılır, atışta ceza yazılır ve per geri gelir', () =>
   const g = newGame();
   const group = [t(0, 4), t(0, 5), t(0, 6)];
   const discard = t(1, 2);
-  g.players[0].hand = [...group, discard];
+  g.players[0].hand = [...group, discard, t(3, 11)];
   assert.equal(g.openGroups(0, [group]).ok, true);
   assert.deepEqual(g.melds[0].tiles, group);
   assert.equal(g.penalties.length, 0);
   assert.equal(g.discard(0, discard).ok, true);
   assert.deepEqual(g.melds, []);
-  assert.deepEqual(g.players[0].hand, group);
+  assert.deepEqual(g.players[0].hand.sort((a,b)=>a-b), [...group, t(3, 11)]);
   assert.equal(g.penalties[0].points, 101);
 });
 
@@ -927,4 +927,38 @@ test('seri bir elde aynı uçta iki, toplam üç taş alır', () => {
   assert.strictEqual(R.canExtend(m, t(2, 9), okey).atEnd, false);
   add(t(0, 4), 3);
   assert.strictEqual(R.canExtend(m, t(0, 3), okey), null);
+});
+
+test('101 altı ilk açılış işleme olmadan son taş atılırsa bitirir', () => {
+  const g = newGame();
+  const group = [t(0, 4), t(0, 5), t(0, 6)];
+  const discard = t(1, 2);
+  g.players[0].hand = [...group, discard];
+  assert.equal(g.openGroups(0, [group]).ok, true);
+  assert.equal(g.discard(0, discard).ok, true);
+  assert.equal(g.lastResult.winner, 0);
+  assert.equal(g.penalties.length, 0);
+});
+
+test('işleme sayaçları sonraki turda sıfırlanır', () => {
+  const g = newGame();
+  const meld = meldOf(g, 50, 1, [t(0, 5), t(0, 6), t(0, 7)]);
+  g.players[0].opened = true;
+  g.players[0].hand = [t(0, 8), t(0, 9), t(0, 10), t(0, 4), t(1, 3)];
+  for (const n of [8, 9, 4]) assert.equal(g.processTile(0, t(0, n), meld.id).ok, true);
+  assert.equal(g.processTile(0, t(0, 10), meld.id).ok, false);
+  assert.equal(g.discard(0, t(1, 3)).ok, true);
+  assert.ok(R.canExtend(meld, t(0, 10), g.okey));
+});
+
+test('kullanılan yan taşı son taşla biten düşük açılışı engellemez', () => {
+  const g = newGame();
+  const side = t(0, 6);
+  g.step = 'draw';
+  g.discards[3].push(side);
+  g.players[0].hand = [t(0, 4), t(0, 5), t(1, 2)];
+  assert.equal(g.takeSide(0).ok, true);
+  assert.equal(g.openGroups(0, [[t(0, 4), t(0, 5), side]]).ok, true);
+  assert.equal(g.discard(0, t(1, 2)).ok, true);
+  assert.equal(g.lastResult.winner, 0);
 });

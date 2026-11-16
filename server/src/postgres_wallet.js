@@ -209,8 +209,10 @@ class PostgresWallet {
     const profile = await this.profile(id);
     const isAdmin = await this.isAdmin(id);
     const movements = await this.db.all(
-      'SELECT amount,reason,time FROM movements WHERE account_id = ? ORDER BY time DESC,sequence DESC LIMIT 20', id);
-    return { ok: true, profile: { ...profile, isAdmin }, movements: movements.map((m) => ({ ...m, amount: Number(m.amount), time: Number(m.time) })) };
+      'SELECT amount,reason,time FROM movements WHERE account_id = ? AND amount <> 0 ORDER BY time DESC,sequence DESC LIMIT 20', id);
+    const pendingDaily = Number((await this.db.get(
+      "SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0", id)).count);
+    return { ok: true, profile: { ...profile, isAdmin }, pendingDaily, movements: movements.map((m) => ({ ...m, amount: Number(m.amount), time: Number(m.time) })) };
   }
 
   async adminLookup(token, email) {
@@ -270,6 +272,19 @@ class PostgresWallet {
     });
   }
 
+  async claimDaily(token) {
+    const id = await this.authenticate(token);
+    if (!id) return fail('Oturum açman gerekiyor.');
+    await this.db.transaction(async (db) => {
+      await this.profile(id, db, true);
+      const count = await db.run(
+        "UPDATE movements SET amount = ?, time = ? WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0",
+        DAILY_CARROTS, Date.now(), id);
+      if (count) await db.run('UPDATE accounts SET carrots = carrots + ? WHERE id = ?', count * DAILY_CARROTS, id);
+    });
+    return this.account(token);
+  }
+
   async grantDaily(now = Date.now()) {
     const latest = latestRewardTime(now);
     return this.db.transaction(async (db) => {
@@ -277,16 +292,11 @@ class PostgresWallet {
       const previous = Number((await db.get('SELECT last_cutoff FROM daily_reward_state WHERE id = 1' + db.lock)).last_cutoff);
       for (let cutoff = previous + DAY_MS; cutoff <= latest; cutoff += DAY_MS) {
         await db.run(`
-          WITH eligible AS (
-            SELECT a.id FROM accounts a JOIN movements m ON m.account_id = a.id
-            WHERE m.ref = 'welcome' AND m.time <= ? ORDER BY a.id FOR UPDATE OF a
-          ), awarded AS (
-            INSERT INTO movements (account_id, ref, amount, reason, time)
-            SELECT id, ?, ?, 'Günlük havuç hediyesi', ? FROM eligible
-            ON CONFLICT DO NOTHING RETURNING account_id
-          )
-          UPDATE accounts SET carrots = carrots + ? FROM awarded WHERE id = awarded.account_id
-        `, cutoff, `daily:${cutoff}`, DAILY_CARROTS, cutoff, DAILY_CARROTS);
+          INSERT INTO movements (account_id, ref, amount, reason, time)
+          SELECT account_id, ?, 0, 'Günlük havuç hediyesi', ? FROM movements
+          WHERE ref = 'welcome' AND time <= ?
+          ON CONFLICT DO NOTHING
+        `, `daily:${cutoff}`, cutoff, cutoff);
       }
       if (previous < latest) {
         await db.run('UPDATE daily_reward_state SET last_cutoff = ? WHERE id = 1', latest);
@@ -294,22 +304,24 @@ class PostgresWallet {
     });
   }
 
-  async hold(matchId, ids) {
+  async hold(matchId, ids, stake = null) {
     if (ids.length !== 4 || ids.some((id) => !id) || new Set(ids).size !== 4) {
       return fail('Havuçlu maç için dört farklı hesap gerekli.');
     }
     return this.db.transaction(async (db) => {
+      const cost = stake === null ? ENTRY_CARROTS : stake + stake / 20;
       const sorted = [...ids].sort();
+      const insufficient = [];
       for (const id of sorted) {
-        if (((await this.profile(id, db, true))?.carrots ?? 0) < ENTRY_CARROTS) {
-          return fail('Tüm oyuncuların en az 100 havucu olmalı.');
-        }
+        const balance = (await this.profile(id, db, true))?.carrots ?? 0;
+        if (balance < cost) insufficient.push({ id, balance });
       }
+      if (insufficient.length) return { ...fail('Bazı oyuncuların havucu yetersiz.'), insufficient };
       const inserted = await db.run(
         "INSERT INTO matches VALUES (?, ?, 'held', ?) ON CONFLICT DO NOTHING",
-        matchId, JSON.stringify(ids), Date.now() + MATCH_LEASE);
+        matchId, JSON.stringify(stake === null ? ids : { stake, players: ids }), Date.now() + MATCH_LEASE);
       if (!inserted) return fail('Maç zaten başlatıldı.');
-      for (const id of sorted) await this.credit(db, id, `entry:${matchId}`, -ENTRY_CARROTS, 'Masa giriş ücreti');
+      for (const id of sorted) await this.credit(db, id, `entry:${matchId}`, -cost, 'Masa giriş ücreti');
       return { ok: true };
     });
   }
@@ -319,16 +331,17 @@ class PostgresWallet {
       const match = await db.get('SELECT * FROM matches WHERE id = ?' + db.lock, matchId);
       if (match?.status !== 'held' || (expiredOnly && Number(match.expires) > Date.now())) return false;
       const entry = match.account_ids;
-      const sponsored = !Array.isArray(entry);
-      const ids = sponsored ? entry.players : entry;
+      const wager = !Array.isArray(entry) && Number.isInteger(entry.stake);
+      const sponsored = !Array.isArray(entry) && !wager;
+      const ids = sponsored || wager ? entry.players : entry;
       const payers = sponsored ? [entry.payer] : ids;
-      const cost = sponsored ? ROOM_COST : ENTRY_CARROTS;
+      const cost = sponsored ? ROOM_COST : wager ? entry.stake + entry.stake / 20 : ENTRY_CARROTS;
       const recipients = ids.filter((id, seat) => id && winners.includes(seat)).sort();
       const refund = !recipients.length && (!sponsored || !winners.length);
       if (refund) {
         for (const id of [...payers].sort()) await this.credit(db, id, `refund:${matchId}`, cost, 'İptal edilen maçın iadesi');
       } else if (recipients.length) {
-        const pot = payers.length * cost;
+        const pot = payers.length * (wager ? entry.stake : cost);
         const share = Math.floor(pot / recipients.length);
         for (const [i, id] of recipients.entries()) {
           await this.credit(db, id, `win:${matchId}`, share + (i < pot % recipients.length ? 1 : 0), 'Maç ödülü');

@@ -489,9 +489,9 @@ class Game {
    * Taş atılınca bekleyen açılış kesinleşir.
    * Yandan alınan taşla seri açılırsa 10, çift açılırsa 20 kat ceza yazılır.
    */
-  commit(p) {
+  commit(p, finishesWithoutProcessing = false) {
     const player = this.players[p];
-    if (!this.pendPairs && player.openPoints < this.openingSeriesTarget) {
+    if (!this.pendPairs && !finishesWithoutProcessing && player.openPoints < this.openingSeriesTarget) {
       while (this.undo.length) this.undoLast(p);
       const penalty = this.applyWrongOpenPenalty(p);
       return ' Açılış taşları ıstakaya döndü.' + (penalty ? ' ' + penalty : '');
@@ -798,11 +798,18 @@ class Game {
     let extra = '';
 
     // Bekleyen açılış taş atınca kesinleşir.
-    if (this.pendingOpen) extra += this.commit(p);
+    if (this.sideTaken !== null && !this.sideTakenUsed) {
+      return fail('Yandan aldığın taşı kullanmadıysan geri bırakıp desteden çekmelisin.');
+    }
+    if (this.pendingOpen) {
+      const finishesWithoutProcessing = pl.hand.length === 1 &&
+        this.undo.every((move) => move.kind === 'open');
+      extra += this.commit(p, finishesWithoutProcessing);
+    }
 
     // Yandan alınıp kullanılmayan taş önce geri bırakılmalı.
     if (this.sideTaken !== null && !this.sideTakenUsed) {
-      return fail('Yandan aldığın taşı kullanmadıysan geri bırakıp desteden çekmelisin.');
+      return fail(extra.trim() + ' Yandan aldığın taşı geri bırakıp desteden çekmelisin.');
     }
 
     if (this.abandonedOpen) {
@@ -840,6 +847,7 @@ class Game {
   }
 
   nextTurn() {
+    for (const meld of this.melds) meld.addedBy.fill(-1);
     this.current = (this.current + 1) % 4;
     this.step = 'draw';
     this.turnNo++;

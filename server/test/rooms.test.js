@@ -19,12 +19,21 @@ function setup() {
   const io = fakeIo();
   const mgr = new RoomManager(io, {
     authenticate: async (token) => token || null,
-    holdRoom: async (_, payer) => payer === 'poor' ? { ok: false } : { ok: true },
+    hold: async () => ({ ok: true }),
     setRoomPlayers: async () => true,
     settle: async () => true,
-    profile: async (id) => ({ id, name: id === 'a' ? 'Ali' : id === 'b' ? 'Veli' : id, carrots: 100 }),
+    profile: async (id) => ({ id, name: id === 'a' ? 'Ali' : id === 'b' ? 'Veli' : id, carrots: 1000 }),
   });
   return { io, mgr };
+}
+
+async function fillRoom(mgr, code) {
+  const extras = [sock('extra-c'), sock('extra-d')];
+  for (const extra of extras) {
+    assert.equal((await mgr.joinRoom(extra, { code, accountToken: extra.id, password: 'test-pass' })).ok, true);
+    mgr.setReady(extra, { ready: true });
+  }
+  return extras;
 }
 
 async function startedRoom(mgr, settings = { indicatorRule: false }) {
@@ -33,8 +42,9 @@ async function startedRoom(mgr, settings = { indicatorRule: false }) {
   const r = await mgr.createRoom(a, { accountToken: 'a', password: 'test-pass', playerName: 'Ali', roomName: 'O', settings });
   const j = await mgr.joinRoom(b, { accountToken: 'b', password: 'test-pass', playerName: 'Veli', code: r.code });
   mgr.setReady(b, { ready: true });
+  const extras = await fillRoom(mgr, r.code);
   await mgr.startGame(a);
-  return { a, b, r, j, room: mgr.rooms.get(r.code) };
+  return { a, b, r, j, extras, room: mgr.rooms.get(r.code) };
 }
 
 test('oda kurma ve kodla katılma', async () => {
@@ -77,10 +87,11 @@ test('oyunu yalnızca oda sahibi ve herkes hazırken başlatır, sonra kural de�
   assert.strictEqual((await mgr.startGame(b)).ok, false);
   assert.strictEqual((await mgr.startGame(a)).ok, false);
   mgr.setReady(b, { ready: true });
+  await fillRoom(mgr, r.code);
   assert.strictEqual((await mgr.startGame(a)).ok, true);
   const room = mgr.rooms.get(r.code);
   assert.strictEqual(room.members.every(Boolean), true);
-  assert.strictEqual(room.members.filter((m) => m.isBot).length, 2);
+  assert.strictEqual(room.members.filter((m) => m.isBot).length, 0);
   assert.strictEqual(mgr.updateSettings(a, { settings: { folding: true } }).ok, false);
   assert.strictEqual((await mgr.joinRoom(sock('c'), { accountToken: 'c', password: 'test-pass', playerName: 'Z', code: r.code })).ok, false);
   room.clearTimer();
@@ -262,11 +273,11 @@ test('public directory exposes waiting room metadata without private state', asy
   const listed = mgr.listRooms();
   assert.strictEqual(listed.ok, true);
   assert.strictEqual(listed.rooms.length, 1);
-  assert.deepStrictEqual(Object.keys(listed.rooms[0]).sort(), ['assisted', 'carrotEntry', 'code', 'count', 'folding', 'locked', 'name', 'totalRounds']);
+  assert.deepStrictEqual(Object.keys(listed.rooms[0]).sort(), ['assisted', 'carrotEntry', 'carrotPrize', 'code', 'count', 'folding', 'locked', 'name', 'totalRounds']);
   assert.strictEqual(listed.rooms[0].code, created.code);
   assert.strictEqual(listed.rooms[0].count, 1);
-  await mgr.startGame(a);
-  assert.strictEqual(mgr.listRooms().rooms.length, 0);
+  assert.equal((await mgr.startGame(a)).ok, false);
+  assert.strictEqual(mgr.listRooms().rooms.length, 1);
   mgr.closeRoom(mgr.rooms.get(created.code), 'test');
   clearInterval(mgr.sweeper);
 });
@@ -314,8 +325,8 @@ test('manual rooms require a password and never disclose it', async (t) => {
 test('quick play checks balance and atomically assigns available seats', async (t) => {
   const { mgr } = setup();
   t.after(() => clearInterval(mgr.sweeper));
-  mgr.accountFor = async (token) => token && ({
-    id: token, name: token, carrots: token === 'poor' ? 99 : 100,
+  mgr.wallet.profile = async (token) => token && ({
+    id: token, name: token, carrots: token === 'poor' ? 104 : 1000,
   });
   const manual = await mgr.createRoom(sock('manual'), {
     password: 'secret-room', carrotEntry: true, accountToken: 'manual',
@@ -336,7 +347,7 @@ test('quick play checks balance and atomically assigns available seats', async (
 
 test('players return to the same lobby without dismissing others’ results', async (t) => {
   const { mgr } = setup();
-  const { a, b, room } = await startedRoom(mgr, { indicatorRule: false, totalRounds: 1 });
+  const { a, b, extras, room } = await startedRoom(mgr, { indicatorRule: false, totalRounds: 1 });
   t.after(() => { room.clearTimer(); clearInterval(mgr.sweeper); });
   assert.equal(mgr.returnLobby(a).ok, false);
   room.game.phase = 'finished';
@@ -344,11 +355,12 @@ test('players return to the same lobby without dismissing others’ results', as
   assert.equal(room.roomInfo(room.members[0]).waitingForLobby, true);
   assert.equal(room.roomInfo(room.members[1]).started, true);
   assert.equal(mgr.returnLobby(b).ok, true);
+  for (const extra of extras) assert.equal(mgr.returnLobby(extra).ok, true);
   assert.equal(room.started, false);
   assert.equal(room.game, null);
-  assert.equal(room.humans().length, 2);
+  assert.equal(room.humans().length, 4);
   assert.ok(room.humans().every((member) => !member.ready && !member.inLobby));
-  assert.equal(mgr.setReady(b, { ready: true }).ok, true);
+  for (const player of [b, ...extras]) assert.equal(mgr.setReady(player, { ready: true }).ok, true);
   assert.equal((await mgr.startGame(a)).ok, true);
 });
 

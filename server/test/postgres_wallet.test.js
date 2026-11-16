@@ -87,7 +87,10 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     assert.deepEqual(await balances(), beforeReward);
     await wallet.grantDaily(noon);
     await wallet.grantDaily(noon + 1000);
-    assert.deepEqual(await balances(), beforeReward.map((balance) => balance + 1000));
+    assert.deepEqual(await balances(), beforeReward);
+    assert.equal((await wallet.account(recovered.token)).pendingDaily, 1);
+    assert.equal((await wallet.claimDaily(recovered.token)).profile.carrots, beforeReward[0] + 1000);
+    assert.equal((await wallet.claimDaily(recovered.token)).profile.carrots, beforeReward[0] + 1000);
   } finally {
     await wallet.db.close();
   }
