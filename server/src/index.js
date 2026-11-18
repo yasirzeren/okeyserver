@@ -1,4 +1,5 @@
 'use strict';
+const { Social } = require('./social');
 const http = require('http');
 const { Server } = require('socket.io');
 const { RoomManager } = require('./rooms');
@@ -98,6 +99,12 @@ io.on('connection', (socket) => {
   on('admin_lookup', (d) => wallet?.adminLookup(d.token, d.email) ?? walletUnavailable);
   on('admin_adjust', (d) => wallet?.adminAdjust(d.token, d) ?? walletUnavailable);
 
+  on('friends_list', (d) => manager.listFriends(d));
+  on('friend_request', (d) => manager.social?.request(d.token, d.target) ?? walletUnavailable);
+  on('friend_respond', (d) => manager.social?.respond(d.token, d.target, d.accept) ?? walletUnavailable);
+  on('friend_invite', (d) => manager.inviteFriend(d));
+  on('friend_invite_dismiss', (d) => manager.social?.dismiss(d.token, d.id) ?? walletUnavailable);
+  on('join_invite', (d) => manager.joinInvite(socket, d));
   on('list_rooms', () => manager.listRooms());
   on('select_seat', (d) => manager.selectSeat(socket, d));
   on('create_room', (d) => manager.createRoom(socket, d));
@@ -133,6 +140,10 @@ io.on('connection', (socket) => {
 async function start() {
   wallet = await createWallet();
   manager = new RoomManager(io, wallet);
+  if (wallet) {
+    manager.social = new Social(wallet);
+    await manager.social.initialize();
+  }
   await manager.maintainWallet();
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Bunny 101 sunucusu ${PORT} portunda çalışıyor.`);

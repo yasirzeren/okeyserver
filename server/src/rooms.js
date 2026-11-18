@@ -75,6 +75,7 @@ class Room {
     this.manager = manager;
     this.io = manager.io;
     this.code = code;
+    this.inviteKey = crypto.randomUUID();
     this.name = name;
     this.settings = settings;
     this.members = [null, null, null, null];
@@ -675,6 +676,55 @@ class RoomManager {
     room.emitTo(member, 'chat_history', room.chat);
     room.broadcastRoom();
     return ok('Odaya girildi.', { token, code: room.code, seat: member.seat });
+  }
+
+  async listFriends(d) {
+    if (!this.social) return fail('Arkadaş sistemi kullanılamıyor.');
+    const result = await this.social.list(d.token);
+    if (!result.ok) return result;
+    const friends = new Set(result.friends.map((friend) => friend.id));
+    result.invites = result.invites.flatMap((invite) => {
+      const room = this.rooms.get(invite.code);
+      if (!room || room.closed || room.started || room.starting ||
+          room.inviteKey !== invite.roomKey || !friends.has(invite.sender) ||
+          !room.humans().some((m) => m.accountId === invite.sender && m.connected)) return [];
+      return [{ id: invite.id, name: invite.name, code: room.code,
+        roomName: room.name, entry: room.stake + room.stake / 20 }];
+    });
+    return result;
+  }
+
+  async inviteFriend(d) {
+    if (!this.social) return fail('Arkadaş sistemi kullanılamıyor.');
+    const sender = await this.wallet.authenticate(d.token);
+    if (!sender) return fail('Hesabına giriş yap.');
+    const room = this.rooms.get(cleanText(d.code).toUpperCase());
+    if (!room || room.closed || room.quickPlay || room.started || room.starting ||
+        !room.humans().some((m) => m.accountId === sender && m.connected)) {
+      return fail('Davet göndermek için açık bir odanın lobisinde olmalısın.');
+    }
+    if (!room.members.includes(null)) return fail('Odada boş koltuk yok.');
+    return this.social.invite(sender, d.target, room);
+  }
+
+  async joinInvite(socket, d) {
+    if (!this.social) return fail('Arkadaş sistemi kullanılamıyor.');
+    const account = await this.accountFor(d.accountToken);
+    if (!account) return fail('Hesabına giriş yap.');
+    const invitation = await this.social.invitation(account.id, d.id);
+    if (!invitation || !await this.social.friends(account.id, invitation.sender)) {
+      return fail('Davetin süresi dolmuş veya davet artık geçerli değil.');
+    }
+    const room = this.rooms.get(invitation.room_code);
+    if (!room || room.inviteKey !== invitation.room_key || room.closed ||
+        room.started || room.starting || room.quickPlay ||
+        !room.humans().some((m) => m.accountId === invitation.sender && m.connected)) {
+      return fail('Davet edilen oda artık katılıma açık değil.');
+    }
+    if (socket.connected === false || this.ctx(socket)) return fail('Bağlantını ve mevcut odanı kontrol et.');
+    if (room.humans().some((m) => m.accountId === account.id)) return fail('Bu hesap zaten odada.');
+    if (account.carrots < room.stake + room.stake / 20) return fail(seatBalanceMessage(room.stake, account.carrots));
+    return this.addToRoom(socket, room, account);
   }
 
   async joinRoom(socket, d) {
