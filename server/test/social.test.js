@@ -22,13 +22,14 @@ test('friend requests need recipient approval and invitations enforce room and a
   try {
     assert.equal((await social.list('invalid')).ok, false);
     assert.equal((await social.request(a.token, a.profile.id)).ok, false);
-    assert.equal((await social.request(a.token, 'friend1@example.test')).ok, true);
-    assert.equal((await social.request(a.token, b.profile.id)).ok, false);
+    assert.equal((await social.request(a.token, b.profile.playerCode)).ok, true);
+    assert.equal((await social.request(a.token, b.profile.playerCode)).ok, false);
     assert.equal((await social.respond(a.token, b.profile.id, true)).ok, false);
     assert.equal((await social.respond(c.token, a.profile.id, true)).ok, false);
     assert.equal((await social.list(b.token)).incoming.length, 1);
     assert.equal((await social.respond(b.token, a.profile.id, true)).ok, true);
     const list = await social.list(a.token);
+    assert.equal(list.playerId, a.profile.playerCode);
     assert.deepEqual(list.friends, [{ id: b.profile.id, name: b.profile.name }]);
     assert.equal(JSON.stringify(list).includes('@example.test'), false);
 
@@ -94,11 +95,12 @@ test('friend persistence uses PostgreSQL and survives service reconstruction', a
     await social.initialize();
     const a = await wallet.register({email:'social-a@example.test', name:'A', password:'fixture-1234'});
     const b = await wallet.register({email:'social-b@example.test', name:'B', password:'fixture-1234'});
-    assert.equal((await social.request(a.token, b.profile.id)).ok, true);
+    assert.equal((await social.request(a.token, b.profile.playerCode)).ok, true);
     assert.equal((await social.respond(b.token, a.profile.id, true)).ok, true);
     const restored = new Social(wallet);
     await restored.initialize();
     assert.equal((await restored.list(b.token)).friends[0].id, a.profile.id);
+    assert.equal((await wallet.profile(b.profile.id)).playerCode, b.profile.playerCode);
     assert.equal((await restored.invite(a.profile.id, b.profile.id, {code:'ABCDE', inviteKey:'one'})).ok, true);
     assert.equal((await restored.list(b.token)).invites.length, 1);
   } finally {

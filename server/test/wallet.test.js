@@ -20,6 +20,8 @@ test('account balance survives restart and pending entries are refunded once', a
   try {
     const accounts = [0, 1, 2, 3].map((i) => wallet.register(credentials(i)));
     const ids = accounts.map((a) => a.profile.id);
+    for (const account of accounts) assert.match(account.profile.playerCode, /^[1-9][0-9]{7}$/);
+    assert.equal(new Set(accounts.map(a => a.profile.playerCode)).size, 4);
     assert.equal(wallet.register(credentials(0)).ok, false);
     assert.equal(wallet.login({ ...credentials(0), password: 'incorrect' }).ok, false);
     assert.equal(wallet.login(credentials(0)).profile.carrots, 1000);
@@ -33,6 +35,7 @@ test('account balance survives restart and pending entries are refunded once', a
     wallet.db.close();
     wallet = new Wallet(path);
     assert.equal(wallet.account(accounts[0].token).profile.carrots, 1300);
+    assert.equal(wallet.account(accounts[0].token).profile.playerCode, accounts[0].profile.playerCode);
     assert.equal(wallet.account(accounts[1].token).profile.carrots, 900);
     assert.equal(wallet.settle('m2'), false);
     wallet.logout(accounts[0].token);

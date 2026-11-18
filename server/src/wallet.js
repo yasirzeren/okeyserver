@@ -1,6 +1,6 @@
 'use strict';
 const { DatabaseSync } = require('node:sqlite');
-const { randomBytes, randomUUID, createHash, scryptSync, timingSafeEqual } = require('node:crypto');
+const { randomBytes, randomUUID, randomInt, createHash, scryptSync, timingSafeEqual } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');
 
@@ -23,6 +23,10 @@ class Wallet {
         id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
         salt TEXT NOT NULL, password TEXT NOT NULL,
         carrots INTEGER NOT NULL DEFAULT 0 CHECK(carrots >= 0)
+      );
+      CREATE TABLE IF NOT EXISTS player_codes (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+        code TEXT NOT NULL UNIQUE CHECK(length(code) = 8)
       );
       CREATE TABLE IF NOT EXISTS sessions (
         hash TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -78,7 +82,16 @@ class Wallet {
   }
 
   profile(id) {
-    return this.db.prepare('SELECT id, name, carrots FROM accounts WHERE id = ?').get(id);
+    const profile = this.db.prepare('SELECT id, name, carrots FROM accounts WHERE id = ?').get(id);
+    if (!profile) return profile;
+    let code = this.db.prepare('SELECT code FROM player_codes WHERE account_id = ?').get(id);
+    for (let attempt = 0; !code && attempt < 20; attempt++) {
+      this.db.prepare('INSERT INTO player_codes VALUES (?, ?) ON CONFLICT DO NOTHING')
+        .run(id, String(randomInt(10000000, 100000000)));
+      code = this.db.prepare('SELECT code FROM player_codes WHERE account_id = ?').get(id);
+    }
+    if (!code) throw new Error('Could not assign player code');
+    return { ...profile, playerCode: code.code };
   }
 
   isAdmin(id) {

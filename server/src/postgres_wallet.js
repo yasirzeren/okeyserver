@@ -24,6 +24,10 @@ class PostgresWallet {
         salt TEXT NOT NULL, password TEXT NOT NULL,
         carrots BIGINT NOT NULL DEFAULT 0 CHECK(carrots >= 0)
       );
+      CREATE TABLE IF NOT EXISTS player_codes (
+        account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+        code TEXT NOT NULL UNIQUE CHECK(length(code) = 8)
+      );
       CREATE TABLE IF NOT EXISTS sessions (
         hash TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), expires BIGINT NOT NULL
       );
@@ -74,7 +78,15 @@ class PostgresWallet {
 
   async profile(id, db = this.db, lock = false) {
     const row = await db.get('SELECT id, name, carrots FROM accounts WHERE id = ?' + (lock ? db.lock : ''), id);
-    return row && { ...row, carrots: Number(row.carrots) };
+    if (!row) return row;
+    let code = await db.get('SELECT code FROM player_codes WHERE account_id = ?', id);
+    for (let attempt = 0; !code && attempt < 20; attempt++) {
+      await db.run('INSERT INTO player_codes VALUES (?, ?) ON CONFLICT DO NOTHING',
+        id, String(randomInt(10000000, 100000000)));
+      code = await db.get('SELECT code FROM player_codes WHERE account_id = ?', id);
+    }
+    if (!code) throw new Error('Could not assign player code');
+    return { ...row, carrots: Number(row.carrots), playerCode: code.code };
   }
   async isAdmin(id) {
     return id != null && !!(await this.db.get('SELECT 1 FROM admins WHERE account_id = ?', id));

@@ -58,7 +58,7 @@ class Social {
       FROM friend_invites i JOIN accounts p ON p.id = i.sender
       WHERE i.receiver = ? ORDER BY i.expires DESC LIMIT 30`, id);
     return ok('', {
-      playerId: id,
+      playerId: (await this.wallet.profile(id)).playerCode,
       friends: rows.filter((r) => r.accepted === 1).map(({ id, name }) => ({ id, name })),
       incoming: rows.filter((r) => !r.accepted && r.sender !== id).map(({ id, name }) => ({ id, name })),
       outgoing: rows.filter((r) => !r.accepted && r.sender === id).map(({ id, name }) => ({ id, name })),
@@ -73,7 +73,8 @@ class Social {
       return fail('Arkadaşının e-postasını veya oyuncu kimliğini gir.');
     }
     const player = await this.db.get(
-      'SELECT id FROM accounts WHERE id = ? OR email = ?', target.trim(), target.trim().toLowerCase());
+      'SELECT a.id FROM accounts a LEFT JOIN player_codes p ON p.account_id = a.id WHERE a.id = ? OR a.email = ? OR p.code = ?',
+      target.trim(), target.trim().toLowerCase(), target.trim());
     if (!player) return fail('Oyuncu bulunamadı.');
     if (player.id === id) return fail('Kendine arkadaşlık isteği gönderemezsin.');
     const pair = [id, player.id].sort();
