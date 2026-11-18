@@ -186,17 +186,18 @@ class Wallet {
     return { ok: true };
   }
 
-  account(token) {
+  account(token, now = Date.now()) {
     const id = this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');
+    this.grantDaily(now);
+    const cutoff = latestRewardTime(now);
     const pendingDaily = this.db.prepare(
-      "SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0"
-    ).get(id).count;
-    return { ok: true, profile: { ...this.profile(id), isAdmin: this.isAdmin(id) }, pendingDaily, movements: this.db.prepare(
-      'SELECT amount, reason, time FROM movements WHERE account_id = ? AND amount <> 0 ORDER BY time DESC, rowid DESC LIMIT 20'
-    ).all(id) };
+      'SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref = ? AND amount = 0'
+    ).get(id, 'daily:' + cutoff).count;
+    const contact = this.db.prepare('SELECT email FROM accounts WHERE id = ?').get(id);
+    return { ok: true, profile: { ...this.profile(id), email: contact.email, isAdmin: this.isAdmin(id) },
+      pendingDaily, dailyCutoff: cutoff };
   }
-
   holdRoom(id, payer) {
     return this.transaction(() => {
       if ((this.profile(payer)?.carrots ?? 0) < ROOM_COST) return fail('Oda açmak için 400 havucun olmalı.');
@@ -218,35 +219,33 @@ class Wallet {
     });
   }
 
-  claimDaily(token) {
+  claimDaily(token, now = Date.now()) {
     const id = this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');
+    this.grantDaily(now);
     this.transaction(() => {
       const count = this.db.prepare(
-        "UPDATE movements SET amount = ?, time = ? WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0"
-      ).run(DAILY_CARROTS, Date.now(), id).changes;
-      if (count) this.db.prepare('UPDATE accounts SET carrots = carrots + ? WHERE id = ?').run(count * DAILY_CARROTS, id);
+        'UPDATE movements SET amount = ?, time = ? WHERE account_id = ? AND ref = ? AND amount = 0'
+      ).run(DAILY_CARROTS, now, id, 'daily:' + latestRewardTime(now)).changes;
+      if (count) this.db.prepare('UPDATE accounts SET carrots = carrots + ? WHERE id = ?').run(DAILY_CARROTS, id);
     });
-    return this.account(token);
+    return this.account(token, now);
   }
 
   grantDaily(now = Date.now()) {
     const latest = latestRewardTime(now);
     return this.transaction(() => {
       const previous = this.db.prepare('SELECT last_cutoff FROM daily_reward_state WHERE id = 1').get()?.last_cutoff;
-      for (let cutoff = (previous ?? latest - DAY_MS) + DAY_MS; cutoff <= latest; cutoff += DAY_MS) {
-        const accounts = this.db.prepare("SELECT account_id FROM movements WHERE ref = 'welcome' AND time <= ? ORDER BY account_id").all(cutoff);
-        for (const { account_id: id } of accounts) {
-          this.db.prepare('INSERT OR IGNORE INTO movements VALUES (?, ?, 0, ?, ?)')
-            .run(id, `daily:${cutoff}`, 'Günlük havuç hediyesi', cutoff);
-        }
+      if (previous != null && previous >= latest) return;
+      this.db.prepare("DELETE FROM movements WHERE ref LIKE 'daily:%' AND amount = 0 AND time < ?").run(latest);
+      const accounts = this.db.prepare("SELECT account_id FROM movements WHERE ref = 'welcome' AND time <= ? ORDER BY account_id").all(latest);
+      for (const { account_id: id } of accounts) {
+        this.db.prepare('INSERT OR IGNORE INTO movements VALUES (?, ?, 0, ?, ?)')
+          .run(id, 'daily:' + latest, 'Günlük havuç hediyesi', latest);
       }
-      if (previous == null || previous < latest) {
-        this.db.prepare('INSERT INTO daily_reward_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_cutoff = excluded.last_cutoff').run(latest);
-      }
+      this.db.prepare('INSERT INTO daily_reward_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET last_cutoff = excluded.last_cutoff').run(latest);
     });
   }
-
   hold(matchId, ids, stake = null) {
     if (ids.length !== 4 || ids.some((id) => !id) || new Set(ids).size !== 4) {
       return fail('Havuçlu maç için dört farklı hesap gerekli.');

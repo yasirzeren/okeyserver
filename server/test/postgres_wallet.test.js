@@ -51,7 +51,7 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     assert.equal((await wallet.adminLookup(users[0].token, 'p1@example.test')).target.id, ids[1]);
     assert.equal((await wallet.adminAdjust(users[0].token, change)).target.carrots, 1400);
     assert.equal((await wallet.adminAdjust(users[0].token, change)).target.carrots, 1400);
-    assert.equal((await wallet.account(users[1].token)).movements[0].amount, 500);
+    assert.equal(Number((await wallet.db.get('SELECT amount FROM movements WHERE account_id = ? ORDER BY time DESC, sequence DESC LIMIT 1', ids[1])).amount), 500);
     await wallet.logout(users[1].token);
     assert.equal(await wallet.authenticate(users[1].token), null);
     const largeGrant = { ...change, amount: 3000000000, requestId: 'b'.repeat(32) };
@@ -88,9 +88,23 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     await wallet.grantDaily(noon);
     await wallet.grantDaily(noon + 1000);
     assert.deepEqual(await balances(), beforeReward);
-    assert.equal((await wallet.account(recovered.token)).pendingDaily, 1);
-    assert.equal((await wallet.claimDaily(recovered.token)).profile.carrots, beforeReward[0] + 1000);
-    assert.equal((await wallet.claimDaily(recovered.token)).profile.carrots, beforeReward[0] + 1000);
+    assert.equal((await wallet.account(recovered.token, noon + 1000)).pendingDaily, 1);
+    assert.equal((await wallet.claimDaily(recovered.token, noon + 1000)).profile.carrots, beforeReward[0] + 1000);
+    assert.equal((await wallet.claimDaily(recovered.token, noon + 1000)).profile.carrots, beforeReward[0] + 1000);
+    const tomorrow = noon + 86400000;
+    const following = noon + 2 * 86400000;
+    await wallet.grantDaily(tomorrow);
+    const unclaimed = await wallet.account(recovered.token, tomorrow);
+    assert.equal(unclaimed.pendingDaily, 1);
+    assert.equal(unclaimed.profile.carrots, beforeReward[0] + 1000);
+    await wallet.grantDaily(following);
+    assert.equal((await wallet.account(recovered.token, following)).pendingDaily, 1);
+    assert.equal((await wallet.claimDaily(recovered.token, following)).profile.carrots,
+      beforeReward[0] + 2000);
+    assert.equal((await wallet.claimDaily(recovered.token, following)).profile.carrots,
+      beforeReward[0] + 2000);
+    assert.equal((await wallet.account(recovered.token, following)).movements, undefined);
+    assert.equal((await wallet.account(recovered.token, following)).profile.email, 'p0@example.test');
   } finally {
     await wallet.db.close();
   }

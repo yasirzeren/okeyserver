@@ -203,18 +203,20 @@ class PostgresWallet {
     return { ok: true };
   }
 
-  async account(token) {
+  async account(token, now = Date.now()) {
     const id = await this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');
+    const cutoff = latestRewardTime(now);
+    await this.grantDaily(now);
     const profile = await this.profile(id);
+    const contact = await this.db.get('SELECT email FROM accounts WHERE id = ?', id);
     const isAdmin = await this.isAdmin(id);
-    const movements = await this.db.all(
-      'SELECT amount,reason,time FROM movements WHERE account_id = ? AND amount <> 0 ORDER BY time DESC,sequence DESC LIMIT 20', id);
     const pendingDaily = Number((await this.db.get(
-      "SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0", id)).count);
-    return { ok: true, profile: { ...profile, isAdmin }, pendingDaily, movements: movements.map((m) => ({ ...m, amount: Number(m.amount), time: Number(m.time) })) };
+      'SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref = ? AND amount = 0',
+      id, 'daily:' + cutoff)).count);
+    return { ok: true, profile: { ...profile, email: contact.email, isAdmin },
+      pendingDaily, dailyCutoff: cutoff };
   }
-
   async adminLookup(token, email) {
     if (!await this.isAdmin(await this.authenticate(token))) return fail('Yönetici yetkisi gerekli.');
     if (typeof email !== 'string' || email.length > 254) return fail('Geçerli bir e-posta gir.');
@@ -272,38 +274,35 @@ class PostgresWallet {
     });
   }
 
-  async claimDaily(token) {
+  async claimDaily(token, now = Date.now()) {
     const id = await this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');
+    await this.grantDaily(now);
     await this.db.transaction(async (db) => {
       await this.profile(id, db, true);
       const count = await db.run(
-        "UPDATE movements SET amount = ?, time = ? WHERE account_id = ? AND ref LIKE 'daily:%' AND amount = 0",
-        DAILY_CARROTS, Date.now(), id);
-      if (count) await db.run('UPDATE accounts SET carrots = carrots + ? WHERE id = ?', count * DAILY_CARROTS, id);
+        'UPDATE movements SET amount = ?, time = ? WHERE account_id = ? AND ref = ? AND amount = 0',
+        DAILY_CARROTS, now, id, 'daily:' + latestRewardTime(now));
+      if (count) await db.run('UPDATE accounts SET carrots = carrots + ? WHERE id = ?', DAILY_CARROTS, id);
     });
-    return this.account(token);
+    return this.account(token, now);
   }
 
   async grantDaily(now = Date.now()) {
     const latest = latestRewardTime(now);
+    const state = await this.db.get('SELECT last_cutoff FROM daily_reward_state WHERE id = 1');
+    if (state && Number(state.last_cutoff) >= latest) return;
     return this.db.transaction(async (db) => {
       await db.run('INSERT INTO daily_reward_state VALUES (1, ?) ON CONFLICT DO NOTHING', latest - DAY_MS);
       const previous = Number((await db.get('SELECT last_cutoff FROM daily_reward_state WHERE id = 1' + db.lock)).last_cutoff);
-      for (let cutoff = previous + DAY_MS; cutoff <= latest; cutoff += DAY_MS) {
-        await db.run(`
-          INSERT INTO movements (account_id, ref, amount, reason, time)
-          SELECT account_id, ?, 0, 'Günlük havuç hediyesi', ? FROM movements
-          WHERE ref = 'welcome' AND time <= ?
-          ON CONFLICT DO NOTHING
-        `, `daily:${cutoff}`, cutoff, cutoff);
-      }
-      if (previous < latest) {
-        await db.run('UPDATE daily_reward_state SET last_cutoff = ? WHERE id = 1', latest);
-      }
+      if (previous >= latest) return;
+      await db.run("DELETE FROM movements WHERE ref LIKE 'daily:%' AND amount = 0 AND time < ?", latest);
+      await db.run(
+        "INSERT INTO movements (account_id, ref, amount, reason, time) SELECT account_id, ?, 0, 'Günlük havuç hediyesi', ? FROM movements WHERE ref = 'welcome' AND time <= ? ON CONFLICT DO NOTHING",
+        'daily:' + latest, latest, latest);
+      await db.run('UPDATE daily_reward_state SET last_cutoff = ? WHERE id = 1', latest);
     });
   }
-
   async hold(matchId, ids, stake = null) {
     if (ids.length !== 4 || ids.some((id) => !id) || new Set(ids).size !== 4) {
       return fail('Havuçlu maç için dört farklı hesap gerekli.');

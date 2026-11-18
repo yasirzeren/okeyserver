@@ -109,14 +109,14 @@ test('admin adjustment requires a role, records the actor, and is applied once',
     assert.deepEqual(audit.map((row) => row.amount), [500, -100]);
     assert.equal(audit[0].admin_id, admin.profile.id);
     assert.equal(audit[0].reason, change.reason);
-    assert.equal(wallet.account(player.token).movements[0].amount, -100);
+    assert.equal(wallet.db.prepare('SELECT amount FROM movements WHERE account_id = ? ORDER BY time DESC, rowid DESC LIMIT 1').get(player.profile.id).amount, -100);
     wallet.setAdmin(admin.profile.id, false);
     assert.equal(wallet.adminAdjust(admin.token, change).ok, false);
   } finally {
     wallet.db.close();
   }
 });
-test('daily reward is issued once per Turkish noon and catches up after downtime', async () => {
+test('daily reward is issued once per Turkish noon and expires unclaimed gifts without accumulation', async () => {
   const wallet = new Wallet(':memory:');
   try {
     const { token, profile: {id: a} } = wallet.register(credentials(21));
@@ -127,12 +127,12 @@ test('daily reward is issued once per Turkish noon and catches up after downtime
     wallet.grantDaily(noon);
     wallet.grantDaily(noon + 1000);
     assert.equal(wallet.profile(a).carrots, 1000);
-    assert.equal(wallet.account(token).pendingDaily, 1);
-    assert.equal(wallet.claimDaily(token).profile.carrots, 2000);
-    assert.equal(wallet.claimDaily(token).profile.carrots, 2000);
+    assert.equal(wallet.account(token, noon + 1000).pendingDaily, 1);
+    assert.equal(wallet.claimDaily(token, noon + 1000).profile.carrots, 2000);
+    assert.equal(wallet.claimDaily(token, noon + 1000).profile.carrots, 2000);
     wallet.grantDaily(noon + 2 * 86400000);
-    assert.equal(wallet.account(token).pendingDaily, 2);
-    assert.equal(wallet.claimDaily(token).profile.carrots, 4000);
+    assert.equal(wallet.account(token, noon + 2 * 86400000).pendingDaily, 1);
+    assert.equal(wallet.claimDaily(token, noon + 2 * 86400000).profile.carrots, 3000);
   } finally {
     wallet.db.close();
   }
