@@ -198,6 +198,16 @@ class Wallet {
     return { ok: true, profile: { ...this.profile(id), email: contact.email, isAdmin: this.isAdmin(id) },
       pendingDaily, dailyCutoff: cutoff };
   }
+  activity(token) {
+    const id = this.authenticate(token);
+    if (!id) return fail('Oturum açman gerekiyor.');
+    return this.transaction(() => ({
+      ok: true, balance: this.profile(id).carrots,
+      movements: this.db.prepare(
+        'SELECT amount,reason,time FROM movements WHERE account_id = ? AND amount <> 0 ORDER BY time DESC,rowid DESC LIMIT 5'
+      ).all(id),
+    }));
+  }
   holdRoom(id, payer) {
     return this.transaction(() => {
       if ((this.profile(payer)?.carrots ?? 0) < ROOM_COST) return fail('Oda açmak için 400 havucun olmalı.');

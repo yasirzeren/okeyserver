@@ -105,6 +105,11 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
       beforeReward[0] + 2000);
     assert.equal((await wallet.account(recovered.token, following)).movements, undefined);
     assert.equal((await wallet.account(recovered.token, following)).profile.email, 'p0@example.test');
+    const activity = await wallet.activity(recovered.token);
+    assert.equal(activity.balance, beforeReward[0] + 2000);
+    assert.equal(activity.movements.length, 5);
+    assert.equal(activity.movements.every(m => m.amount !== 0), true);
+    assert.equal((await wallet.activity('invalid')).ok, false);
   } finally {
     await wallet.db.close();
   }

@@ -137,3 +137,24 @@ test('daily reward is issued once per Turkish noon and expires unclaimed gifts w
     wallet.db.close();
   }
 });
+
+test('carrot activity is private and limited to the latest five nonzero entries', () => {
+  const wallet = new Wallet(':memory:');
+  try {
+    const a = wallet.register(credentials(61));
+    const b = wallet.register(credentials(62));
+    for (let i = 1; i <= 6; i++) {
+      wallet.transaction(() => wallet.credit(a.profile.id, 'qa-' + i,
+        i % 2 ? i * 10 : -i * 10, 'İşlem ' + i));
+    }
+    wallet.transaction(() => wallet.credit(b.profile.id, 'other', 900, 'Other player'));
+    const activity = wallet.activity(a.token);
+    assert.equal(activity.ok, true);
+    assert.equal(activity.balance, 970);
+    assert.deepEqual(activity.movements.map(m => m.amount), [-60, 50, -40, 30, -20]);
+    assert.equal(activity.movements.some(m => m.reason === 'Other player'), false);
+    assert.equal(wallet.activity('invalid').ok, false);
+  } finally {
+    wallet.db.close();
+  }
+});

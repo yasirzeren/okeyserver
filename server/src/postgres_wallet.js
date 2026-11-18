@@ -217,6 +217,18 @@ class PostgresWallet {
     return { ok: true, profile: { ...profile, email: contact.email, isAdmin },
       pendingDaily, dailyCutoff: cutoff };
   }
+  async activity(token) {
+    const id = await this.authenticate(token);
+    if (!id) return fail('Oturum açman gerekiyor.');
+    return this.db.transaction(async (db) => {
+      const profile = await this.profile(id, db, true);
+      const movements = await db.all(
+        'SELECT amount,reason,time FROM movements WHERE account_id = ? AND amount <> 0 ORDER BY time DESC,sequence DESC LIMIT 5', id);
+      return { ok: true, balance: profile.carrots,
+        movements: movements.map((m) => ({ ...m, amount: Number(m.amount), time: Number(m.time) })) };
+    });
+  }
+
   async adminLookup(token, email) {
     if (!await this.isAdmin(await this.authenticate(token))) return fail('Yönetici yetkisi gerekli.');
     if (typeof email !== 'string' || email.length > 254) return fail('Geçerli bir e-posta gir.');

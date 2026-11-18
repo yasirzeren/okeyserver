@@ -94,6 +94,7 @@ io.on('connection', (socket) => {
     : resetUnavailable);
   on('claim_daily', (d) => wallet?.claimDaily(d.token) ?? walletUnavailable);
   on('account_profile', (d) => wallet?.account(d.token) ?? walletUnavailable);
+  on('wallet_activity', (d) => wallet?.activity(d.token) ?? walletUnavailable);
   on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
 
   on('admin_lookup', (d) => wallet?.adminLookup(d.token, d.email) ?? walletUnavailable);
