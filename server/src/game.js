@@ -46,6 +46,7 @@ class Game {
     this.discards = [[], [], [], []];
     this.melds = [];
     this.penalties = [];
+    this.roundScores = [];
     this.outbox = []; // sistem mesajları, oda tarafından sohbete aktarılır
     this.current = 0;
     this.step = 'draw'; // 'draw' | 'play'
@@ -881,6 +882,21 @@ class Game {
       voided,
     });
     this.lastResult = result;
+    if (!voided) {
+      const penalties = [0, 0, 0, 0], remaining = [0, 0, 0, 0], deltas = [0, 0, 0, 0];
+      this.players.forEach((p, i) => {
+        const delta = result.deltas[i];
+        const closing = delta <= 0 ? 0 : !p.opened ? delta
+          : p.openType === 'pairs' && R.handPenalty(p.hand, this.okey) > 100 ? 101 : 0;
+        const immediate = this.penalties.filter(e => e.round === this.round && e.player === i)
+          .reduce((sum, e) => sum + e.points, 0);
+        penalties[i] = closing + immediate;
+        remaining[i] = delta - closing;
+        deltas[i] = delta + immediate;
+      });
+      this.roundScores = this.roundScores.filter(e => e.round !== this.round);
+      this.roundScores.push({round: this.round, remaining, penalties, deltas, totals: [...result.totals]});
+    }
     this.players.forEach((p, i) => {
       p.score = result.totals[i];
     });
@@ -941,6 +957,7 @@ class Game {
       processedTiles: this.processedTilesFor(seat),
       penalties: this.penalties.map((e) => ({ ...e })),
       result: this.lastResult,
+      roundScores: this.roundScores.map(e => ({...e, remaining: [...e.remaining], penalties: [...e.penalties], deltas: [...e.deltas], totals: [...e.totals]})),
       myHand: [...this.players[seat].hand],
       lastDrawn: this.lastDrawn && this.lastDrawn.seat === seat ? this.lastDrawn.id : null,
     };
