@@ -1,5 +1,7 @@
 'use strict';
 const { Social } = require('./social');
+const { Management } = require('./management');
+const { createHash } = require('node:crypto');
 const http = require('http');
 const { Server } = require('socket.io');
 const { RoomManager } = require('./rooms');
@@ -44,6 +46,7 @@ async function sendResetEmail(email, code) {
 
 let wallet;
 let manager;
+let management;
 const authAttempts = new Map();
 const clearAttempts = setInterval(() => authAttempts.clear(), 60000);
 clearAttempts.unref();
@@ -76,6 +79,7 @@ io.on('connection', (socket) => {
       if (!allow()) return reply({ ok: false, message: 'Çok hızlı işlem yapıyorsun.' });
       try {
         const body = data && typeof data === 'object' ? data : {};
+        if (manager.blockedAccounts?.has(manager.ctx(socket)?.member.accountId)) return reply({ok:false,message:'Hesap engellendi.'});
         reply((await handler(body)) || { ok: true, message: '' });
       } catch (e) {
         console.error(`'${event}' işlenirken hata:`, e);
@@ -96,6 +100,15 @@ io.on('connection', (socket) => {
   on('account_profile', (d) => wallet?.account(d.token) ?? walletUnavailable);
   on('wallet_activity', (d) => wallet?.activity(d.token) ?? walletUnavailable);
   on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
+
+  on('account_presence', async (d) => {
+    const id = await wallet?.authenticate(d.token);
+    socket.data.accountId = id || null;
+    return {ok:!!id};
+  });
+  on('management_stats', (d) => management?.stats(d.token) ?? walletUnavailable);
+  on('management_lookup', (d) => management?.lookup(d.token,d.query) ?? walletUnavailable);
+  on('management_action', (d) => management?.action(d.token,d) ?? walletUnavailable);
 
   on('admin_lookup', (d) => wallet?.adminLookup(d.token, d.email) ?? walletUnavailable);
   on('admin_adjust', (d) => wallet?.adminAdjust(d.token, d) ?? walletUnavailable);
@@ -144,6 +157,10 @@ async function start() {
   if (wallet) {
     manager.social = new Social(wallet);
     await manager.social.initialize();
+    management = new Management(wallet, manager, io, manager.social.db);
+    const managers = await manager.social.db.all('SELECT account_id FROM managers');
+    const primary = await manager.social.db.get("SELECT a.email FROM managers m JOIN accounts a ON a.id = m.account_id WHERE m.slot = 1");
+    console.log('Management ready:', JSON.stringify({managerCount:managers.length,primaryManagerAssigned:!!primary && createHash('sha256').update(primary.email).digest('hex') === 'd5c307ce08edb11545d706db59e39a986887234906e766048bda1231ec48aa0f'}));
   }
   await manager.maintainWallet();
   server.listen(PORT, '0.0.0.0', () => {

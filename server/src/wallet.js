@@ -53,6 +53,8 @@ class Wallet {
         PRIMARY KEY (account_id, ref)
       );
     `);
+    this.db.function('bunny_manager_email_hash', {deterministic:true}, (email) => createHash('sha256').update(email).digest('hex'));
+    this.db.exec(require('./management_schema'));
     // The game state lives in memory. After a restart its unfinished matches
     // cannot resume, so release their entries from the persistent wallet.
     if (recoverPending) {
@@ -94,8 +96,12 @@ class Wallet {
     return { ...profile, playerCode: code.code };
   }
 
+  isManager(id) {
+    return id != null && !!this.db.prepare('SELECT 1 FROM managers WHERE account_id = ?').get(id);
+  }
+
   isAdmin(id) {
-    return id !== null && !!this.db.prepare('SELECT 1 FROM admins WHERE account_id = ?').get(id);
+    return this.isManager(id) || (id != null && !!this.db.prepare('SELECT 1 FROM admins WHERE account_id = ?').get(id));
   }
 
   setAdmin(id, enabled) {
@@ -125,7 +131,8 @@ class Wallet {
     reason = reason.trim();
     return this.transaction(() => {
       const target = this.profile(accountId);
-      if (!target) return fail('Oyuncu bulunamadı.');
+      if (!target || this.db.prepare("SELECT 1 FROM account_controls WHERE account_id = ? AND status = 'deleted'").get(accountId)) return fail('Oyuncu bulunamadı.');
+      if (!this.isAdmin(this.authenticate(token))) return fail('Admin yetkisi gerekli.');
       const previous = this.db.prepare(
         'SELECT account_id, amount, reason FROM admin_adjustments WHERE admin_id = ? AND request_id = ?'
       ).get(admin, requestId);
@@ -150,7 +157,7 @@ class Wallet {
     const now = Date.now();
     const hash = digest(token);
     const session = this.db.prepare(
-      'SELECT account_id, expires FROM sessions WHERE hash = ? AND expires > ?'
+      `SELECT account_id, expires FROM sessions s WHERE hash = ? AND expires > ? AND NOT EXISTS(SELECT 1 FROM account_controls c WHERE c.account_id = s.account_id AND c.status <> 'active')`
     ).get(hash, now);
     if (session && session.expires < now + 7 * DAY_MS) {
       this.db.prepare('UPDATE sessions SET expires = ? WHERE hash = ? AND expires > ?')
@@ -160,10 +167,11 @@ class Wallet {
   }
 
   session(id) {
+    if (this.db.prepare("SELECT 1 FROM account_controls WHERE account_id = ? AND status <> 'active'").get(id)) return fail('Hesap kullanılamıyor.');
     const token = randomBytes(32).toString('hex');
     this.db.prepare('DELETE FROM sessions WHERE expires <= ?').run(Date.now());
     this.db.prepare('INSERT INTO sessions VALUES (?, ?, ?)').run(digest(token), id, Date.now() + TOKEN_LIFETIME);
-    return { ok: true, token, profile: { ...this.profile(id), isAdmin: this.isAdmin(id) } };
+    return { ok: true, token, profile: { ...this.profile(id), isAdmin: this.isAdmin(id), isManager: this.isManager(id) } };
   }
 
   register({ email, password, name }) {
@@ -208,7 +216,7 @@ class Wallet {
       'SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref = ? AND amount = 0'
     ).get(id, 'daily:' + cutoff).count;
     const contact = this.db.prepare('SELECT email FROM accounts WHERE id = ?').get(id);
-    return { ok: true, profile: { ...this.profile(id), email: contact.email, isAdmin: this.isAdmin(id) },
+    return { ok: true, profile: { ...this.profile(id), email: contact.email, isAdmin: this.isAdmin(id), isManager: this.isManager(id) },
       pendingDaily, dailyCutoff: cutoff };
   }
   activity(token) {

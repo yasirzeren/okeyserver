@@ -67,6 +67,7 @@ class PostgresWallet {
       CREATE INDEX IF NOT EXISTS movements_history ON movements(account_id, time DESC, sequence DESC);
       CREATE INDEX IF NOT EXISTS held_matches ON matches(expires) WHERE status = 'held';
     `);
+    await this.db.exec(require('./management_schema').replace('bunny_manager_email_hash(email)', "encode(sha256(convert_to(email, 'UTF8')), 'hex')"));
   }
 
   async credit(db, id, ref, amount, reason) {
@@ -88,8 +89,11 @@ class PostgresWallet {
     if (!code) throw new Error('Could not assign player code');
     return { ...row, carrots: Number(row.carrots), playerCode: code.code };
   }
+  async isManager(id) {
+    return id != null && !!(await this.db.get('SELECT 1 FROM managers WHERE account_id = ?', id));
+  }
   async isAdmin(id) {
-    return id != null && !!(await this.db.get('SELECT 1 FROM admins WHERE account_id = ?', id));
+    return await this.isManager(id) || (id != null && !!(await this.db.get('SELECT 1 FROM admins WHERE account_id = ?', id)));
   }
   async setAdmin(id, enabled) {
     if (!await this.profile(id)) return false;
@@ -103,7 +107,7 @@ class PostgresWallet {
     const now = Date.now();
     const hash = hashToken(token);
     const session = await this.db.get(
-      'SELECT account_id, expires FROM sessions WHERE hash = ? AND expires > ?', hash, now);
+      `SELECT account_id, expires FROM sessions s WHERE hash = ? AND expires > ? AND NOT EXISTS(SELECT 1 FROM account_controls c WHERE c.account_id = s.account_id AND c.status <> 'active')`, hash, now);
     if (session && Number(session.expires) < now + 7 * DAY_MS) {
       await this.db.run('UPDATE sessions SET expires = ? WHERE hash = ? AND expires > ?',
         now + TOKEN_LIFETIME, hash, now);
@@ -112,12 +116,14 @@ class PostgresWallet {
   }
 
   async session(db, id) {
+    if (await db.get("SELECT 1 FROM account_controls WHERE account_id = ? AND status <> 'active'", id)) return fail('Hesap kullanılamıyor.');
     const token = randomBytes(32).toString('hex');
     await db.run('DELETE FROM sessions WHERE expires <= ?', Date.now());
     await db.run('INSERT INTO sessions VALUES (?, ?, ?)', hashToken(token), id, Date.now() + TOKEN_LIFETIME);
     const profile = await this.profile(id, db);
-    const isAdmin = !!(await db.get('SELECT 1 FROM admins WHERE account_id = ?', id));
-    return { ok: true, token, profile: { ...profile, isAdmin } };
+    const isManager = !!(await db.get('SELECT 1 FROM managers WHERE account_id = ?', id));
+    const isAdmin = isManager || !!(await db.get('SELECT 1 FROM admins WHERE account_id = ?', id));
+    return { ok: true, token, profile: { ...profile, isAdmin, isManager } };
   }
 
   async register({ email, password, name }) {
@@ -226,7 +232,7 @@ class PostgresWallet {
     const pendingDaily = Number((await this.db.get(
       'SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref = ? AND amount = 0',
       id, 'daily:' + cutoff)).count);
-    return { ok: true, profile: { ...profile, email: contact.email, isAdmin },
+    return { ok: true, profile: { ...profile, email: contact.email, isAdmin, isManager: await this.isManager(id) },
       pendingDaily, dailyCutoff: cutoff };
   }
   async activity(token) {
@@ -260,7 +266,7 @@ class PostgresWallet {
     reason = reason.trim();
     return this.db.transaction(async (db) => {
       const target = await this.profile(accountId, db, true);
-      if (!target) return fail('Oyuncu bulunamadı.');
+      if (!target || await db.get("SELECT 1 FROM account_controls WHERE account_id = ? AND status = 'deleted'", accountId)) return fail('Oyuncu bulunamadı.');
       const previous = await db.get(
         'SELECT account_id,amount,reason FROM admin_adjustments WHERE admin_id = ? AND request_id = ?', admin, requestId);
       if (previous) {

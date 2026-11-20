@@ -672,6 +672,7 @@ class RoomManager {
     }
     this.sessions.set(token, { code: room.code, seat: member.seat });
     socket.data.token = token;
+    socket.data.accountId = member.accountId;
     room.touch();
     room.emitTo(member, 'chat_history', room.chat);
     room.broadcastRoom();
@@ -752,6 +753,9 @@ class RoomManager {
 
   async resume(socket, d) {
     const token = typeof d.token === 'string' ? d.token : '';
+    const saved = this.sessions.get(token);
+    const member = saved && this.rooms.get(saved.code)?.members[saved.seat];
+    if (member?.accountId && (this.blockedAccounts?.has(member.accountId) || await this.social?.db.get("SELECT 1 FROM account_controls WHERE account_id = ? AND status <> 'active'", member.accountId))) return fail('Hesap engellendi.');
     const current = this.ctx(socket);
     if (current) {
       if (current.member.token !== token) return fail('Zaten bir odadas\u0131n.');
