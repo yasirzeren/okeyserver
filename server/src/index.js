@@ -1,6 +1,8 @@
 'use strict';
 const { Social } = require('./social');
 const { Management } = require('./management');
+const { AccountLifecycle } = require('./account_lifecycle');
+const { publicPage } = require('./public_pages');
 const { createHash } = require('node:crypto');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -9,12 +11,13 @@ const { createWallet } = require('./wallet_backend');
 
 const PORT = Number(process.env.PORT) || 3000;
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
     return;
   }
+  try { if (await publicPage(req,res,accountLifecycle)) return; } catch(error) { console.error('Public page:',error.code||error.name); res.writeHead(500);res.end('İşlem tamamlanamadı.');return; }
   res.writeHead(404);
   res.end();
 });
@@ -47,6 +50,7 @@ async function sendResetEmail(email, code) {
 let wallet;
 let manager;
 let management;
+let accountLifecycle;
 const authAttempts = new Map();
 const clearAttempts = setInterval(() => authAttempts.clear(), 60000);
 clearAttempts.unref();
@@ -82,7 +86,7 @@ io.on('connection', (socket) => {
         if (manager.blockedAccounts?.has(manager.ctx(socket)?.member.accountId)) return reply({ok:false,message:'Hesap engellendi.'});
         reply((await handler(body)) || { ok: true, message: '' });
       } catch (e) {
-        console.error(`'${event}' işlenirken hata:`, e);
+        console.error(`'${event}' işlenirken hata:`, e.code || e.name);
         reply({ ok: false, message: 'Sunucu hatası.' });
       }
     });
@@ -101,6 +105,7 @@ io.on('connection', (socket) => {
   on('wallet_activity', (d) => wallet?.activity(d.token) ?? walletUnavailable);
   on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
 
+  on('account_delete', (d) => accountLifecycle ? auth(socket, () => accountLifecycle.remove(d.token,d.password,d.confirmation)) : walletUnavailable);
   on('account_presence', async (d) => {
     const id = await wallet?.authenticate(d.token);
     socket.data.accountId = id || null;
@@ -158,6 +163,7 @@ async function start() {
     manager.social = new Social(wallet);
     await manager.social.initialize();
     management = new Management(wallet, manager, io, manager.social.db);
+    accountLifecycle = new AccountLifecycle(wallet,management);
     const managers = await manager.social.db.all('SELECT account_id FROM managers');
     const primary = await manager.social.db.get("SELECT a.email FROM managers m JOIN accounts a ON a.id = m.account_id WHERE m.slot = 1");
     console.log('Management ready:', JSON.stringify({managerCount:managers.length,primaryManagerAssigned:!!primary && createHash('sha256').update(primary.email).digest('hex') === 'd5c307ce08edb11545d706db59e39a986887234906e766048bda1231ec48aa0f'}));

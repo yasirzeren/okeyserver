@@ -1,5 +1,6 @@
 'use strict';
-const { createHash, randomBytes } = require('node:crypto');
+const { createHash } = require('node:crypto');
+const {anonymizeStatements}=require('./account_lifecycle');
 const fail = (message) => ({ok:false, message});
 const ok = (message='', data={}) => ({ok:true, message, ...data});
 
@@ -109,15 +110,7 @@ class Management {
       args:[target,status,reason,now]});
       if (status !== 'active') statements.push({sql:'DELETE FROM sessions WHERE account_id = ?',args:[target]});
       if (action === 'delete') {
-        statements.push(
-          {sql:'DELETE FROM admins WHERE account_id = ?',args:[target]},
-          {sql:'DELETE FROM managers WHERE account_id = ?',args:[target]},
-          {sql:'DELETE FROM password_resets WHERE account_id = ?',args:[target]},
-          {sql:'DELETE FROM friendships WHERE a = ? OR b = ?',args:[target,target]},
-          {sql:'DELETE FROM friend_invites WHERE sender = ? OR receiver = ?',args:[target,target]},
-          {sql:"UPDATE accounts SET name = 'Silinen Oyuncu', email = ?, password = ?, salt = ? WHERE id = ?",
-            args:['deleted+'+target+'@invalid.local',randomBytes(64).toString('hex'),randomBytes(16).toString('hex'),target]},
-        );
+        statements.push(...anonymizeStatements(target));
       }
     }
     const auditSql = 'INSERT INTO management_audit VALUES (?, ?, ?, ?, ?, ?)';
@@ -177,7 +170,18 @@ class Management {
   kick(id, action, reason) {
     this.manager.blockedAccounts ??= new Set();
     this.manager.blockedAccounts.add(id);
-    const message = action === 'delete' ? 'Hesabın silindi.' : 'Hesabın engellendi: '+reason;
+    if (action === 'delete') {
+      for (const room of this.manager.rooms.values()) {
+        for (const member of room.members ?? []) {
+          if (member?.accountId !== id) continue;
+          const previousName = member.name;
+          room.chat = (room.chat ?? []).filter(entry => entry.author !== previousName);
+          member.name = 'Silinen Oyuncu';
+          if (room.game) room.game.players[member.seat].name = 'Silinen Oyuncu';
+        }
+      }
+    }
+    const message = action === 'delete'  ? 'Hesabın silindi.' : 'Hesabın engellendi: '+reason;
     for (const socket of [...this.io.of('/').sockets.values()]) {
       if (socket.data.accountId !== id && this.manager.ctx(socket)?.member.accountId !== id) continue;
       socket.emit('account_disabled',{message});
