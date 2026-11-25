@@ -604,7 +604,7 @@ class Game {
   // ---------------------------------------------------------------- işleme
   processedTilesFor(p) {
     if (this.phase !== 'playing' || this.current !== p || this.step !== 'play') return [];
-    return this.undo.filter((move) => move.kind === 'proc').map((move) => move.tile);
+    return this.undo.flatMap((move) => move.kind === 'proc' ? [move.tile] : move.kind === 'pair' ? move.tiles : []);
   }
 
   revertProcess(meld, move) {
@@ -618,9 +618,28 @@ class Game {
   returnProcessedTile(p, tile) {
     const guard = this.guard(p, 'play');
     if (guard) return guard;
-    const index = this.undo.findIndex((move) => move.kind === 'proc' && move.tile === tile);
+    const index = this.undo.findIndex((move) =>
+      move.kind === 'proc' && move.tile === tile ||
+      move.kind === 'pair' && move.tiles.includes(tile));
     if (index < 0) return fail('Bu taş bu tur işlenmedi.');
     const move = this.undo[index];
+    if (move.kind === 'pair') {
+      const meldIndex = this.melds.findIndex((m) => m.id === move.meldId);
+      if (meldIndex < 0 || this.undo.slice(index + 1).some((later) => later.meldId === move.meldId)) {
+        return fail('Bu perde daha sonra yapılan işlemi önce geri al.');
+      }
+      const pair = this.melds[meldIndex];
+      if (pair.kind !== 'pair' || pair.tiles.length !== move.tiles.length ||
+          !move.tiles.every((id) => pair.tiles.includes(id))) {
+        return fail('İşlenen çift geri alınamıyor.');
+      }
+      this.melds.splice(meldIndex, 1);
+      this.undo.splice(index, 1);
+      this.players[p].hand.push(...move.tiles);
+      this.players[p].processedCount -= move.tiles.length;
+      if (move.tiles.includes(this.sideTaken)) this.sideTakenUsed = false;
+      return ok('Çift ıstakaya döndü.');
+    }
     const meld = this.melds.find((m) => m.id === move.meldId);
     const draft = { ...meld, tiles: [...meld.tiles], slots: [...meld.slots], addedBy: [...meld.addedBy] };
     const later = [];
