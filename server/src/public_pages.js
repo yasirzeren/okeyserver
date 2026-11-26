@@ -1,4 +1,5 @@
 'use strict';
+const { APP_ADS_TEXT } = require('./admob_config');
 const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const shell=(title,body)=>'<!doctype html><html lang="tr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'+escape(title)+' · Bunny 101</title><style>body{font:17px system-ui;background:#10392e;color:#fff;margin:0;padding:24px}main{max-width:680px;margin:24px auto}a{color:#e6c475}label{display:block;margin:14px 0}input{box-sizing:border-box;width:100%;font:inherit;padding:12px;border:1px solid #c6a25c;border-radius:8px}button{font:inherit;padding:12px 20px;background:#c6a25c;color:#10392e;border:0;border-radius:8px}h1{font-size:28px}p{line-height:1.5}</style><main><h1>'+escape(title)+'</h1>'+body+'</main></html>';
 function send(res,status,html) {
@@ -15,6 +16,11 @@ const attempts=new Map();
 const interval=setInterval(()=>attempts.clear(),60000);interval.unref();
 async function publicPage(req,res,lifecycle) {
   const path=req.url?.split('?')[0];
+  if(path==='/app-ads.txt') {
+    if(!['GET','HEAD'].includes(req.method)) {res.writeHead(405,{'Allow':'GET, HEAD'});res.end();return true;}
+    res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'public, max-age=3600','X-Content-Type-Options':'nosniff'});
+    res.end(req.method==='HEAD'?undefined:APP_ADS_TEXT);return true;
+  }
   if(path==='/privacy' && req.method==='GET') {send(res,200,privacyPage());return true;}
   if(path!=='/account-deletion') return false;
   if(req.method==='GET') {send(res,200,deletionPage());return true;}

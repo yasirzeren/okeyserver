@@ -1,20 +1,43 @@
 # Market ve ödüllü reklam ayarları
 
-Reklamlar varsayılan olarak kapalıdır. Yapılandırma olmadan reklam izleme ve
-ödül kaydetme işlemleri sunucuda reddedilir; istemci geri çağrısı tek başına
-havuç veya emoji kazandırmaz. Emoji satın alma ve 72 saatlik kullanım açıktır.
+Android ve iOS için AdMob'da oluşturulan üretim ödüllü birimleri `src/admob_config.js`
+içinde varsayılan olarak tanımlıdır. Bu kimlikler herkese açık entegrasyon
+bilgileridir, şifre veya gizli API anahtarı değildir. İstemci geri çağrısı tek başına havuç veya emoji
+kazandırmaz; Google SSV doğrulaması gerekir. Emoji satın alma ve 72 saatlik
+kullanım açıktır.
 
-AdMob hesabı ve uygulamalar oluşturulduğunda Android/iOS uygulama kimlikleri
-Flutter derlemesinde ayarlanır. Üretim ödüllü reklam birimi kimliklerini ilgili
-sunucu ortam değişkenlerine ekle:
+Flutter'da aynı hesaba ait Android uygulama kimliği
+`ca-app-pub-6003559032392528~3194936019`, ödüllü birim kimliği
+`ca-app-pub-6003559032392528/9595839204` kullanılmalıdır.
+iOS uygulama kimliği `ca-app-pub-6003559032392528~5273450819`, ödüllü birimi
+`ca-app-pub-6003559032392528/8446409063` olmalıdır.
+Sunucu ortam değişkenleri, dosyadaki varsayılanları geçersiz kılar:
 
 - `BUNNY_ADMOB_ANDROID_REWARDED_UNIT=ca-app-pub-…/…`
 - `BUNNY_ADMOB_IOS_REWARDED_UNIT=ca-app-pub-…/…`
+
+Bir ortam değişkenini açıkça boş metne ayarlamak o platformdaki reklamları
+kapatır. Geçersiz veya Google örnek birim kimlikleri de platformu etkinleştirmez.
+Varsayılanı kullanmak için ilgili ortam değişkenini tanımlama.
 
 Sunucu Google'ın örnek reklam yayıncısını (`3940256099942544`) kabul etmez.
 AdMob'daki ödüllü birimlerin sunucu doğrulama URL'sini uygulama sunucusunun
 HTTPS adresine `/admob/ssv` ekleyerek ayarla. Canlı sunucu için örnek adres:
 `https://okeyserver-erdi.onrender.com/admob/ssv`.
+
+Geliştirici sitesi `https://okeyserver-erdi.onrender.com` için
+`/app-ads.txt` düz metin olarak şu satırı sunar:
+
+```text
+google.com, pub-6003559032392528, DIRECT, f08c47fec0942fa0
+```
+
+Mağaza kaydı hazırlanırken geliştirici web sitesi olarak bu alan adını ekle.
+Google'ın dosyayı taraması/doğrulaması ve uygulama hazırlık incelemesi ayrıca
+tamamlanmalıdır; birim oluşturmak tek başına tam reklam yayını anlamına gelmez.
+Yayıncı hesabı değiştirilirse `src/admob_config.js` içindeki yayıncı kimliğini
+ve istemcideki uygulama/birim kimliklerini birlikte güncelle.
+Resmi biçim: https://developers.google.com/admob/android/app-ads
 
 İstemci önce `market_ad_offer` ile hesaba, amaca ve reklam birimine bağlı bir
 işlem açar. Yanıttaki `customData` reklam gösterilmeden önce SDK'nın SSV

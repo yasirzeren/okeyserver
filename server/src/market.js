@@ -2,6 +2,7 @@
 const { randomBytes } = require('node:crypto');
 const { DAY_MS, latestRewardTime } = require('./carrot_policy');
 const { EMOJIS, emojiById, RENTAL_MS, EMOJI_PRICE, EMOJI_AD_VIEWS, AD_REWARDS } = require('./emoji_catalog');
+const { readAdmobUnits, validAdmobUnits } = require('./admob_config');
 const fail = (message, code = 'market_error') => ({ ok: false, message, code });
 const query = (kind, sql, ...args) => ({ kind, sql, args });
 const get = (sql, ...args) => query('get', sql, ...args);
@@ -41,13 +42,7 @@ class Market {
     this.sqlite = typeof wallet.db.prepare === 'function';
     this.db = this.sqlite ? sqliteAdapter(wallet.db) : wallet.db;
     this.now = now;
-    const source = units ?? {
-      android: process.env.BUNNY_ADMOB_ANDROID_REWARDED_UNIT,
-      ios: process.env.BUNNY_ADMOB_IOS_REWARDED_UNIT,
-    };
-    this.units = Object.fromEntries(Object.entries(source).filter(([platform, unit]) =>
-      ['android', 'ios'].includes(platform) && /^ca-app-pub-\d{16}\/\d{10}$/.test(unit ?? '') &&
-      !unit.startsWith('ca-app-pub-3940256099942544/')));
+    this.units = units == null ? readAdmobUnits() : validAdmobUnits(units);
   }
   async initialize() { await this.db.exec(require('./market_schema')); }
   get configured() { return Object.keys(this.units).length > 0; }
