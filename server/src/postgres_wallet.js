@@ -266,6 +266,18 @@ class PostgresWallet {
     }
     reason = reason.trim();
     return this.db.transaction(async (db) => {
+      // A request may wait for a pool connection after its first role check.
+      // Serialize with management actions, then require the current session and
+      // role again so queued requests cannot outlive revoked admin access.
+      await db.get('SELECT id FROM management_state WHERE id = 1 FOR UPDATE');
+      const authorized = await db.get(`
+        SELECT 1 FROM sessions s WHERE s.hash = ? AND s.account_id = ? AND s.expires > ?
+          AND (EXISTS(SELECT 1 FROM admins WHERE account_id = s.account_id)
+            OR EXISTS(SELECT 1 FROM managers WHERE account_id = s.account_id))
+          AND NOT EXISTS(SELECT 1 FROM account_controls c
+            WHERE c.account_id = s.account_id AND c.status <> 'active')`,
+      hashToken(token), admin, Date.now());
+      if (!authorized) return fail('Yönetici yetkisi gerekli.');
       const target = await this.profile(accountId, db, true);
       if (!target || await db.get("SELECT 1 FROM account_controls WHERE account_id = ? AND status = 'deleted'", accountId)) return fail('Oyuncu bulunamadı.');
       const previous = await db.get(

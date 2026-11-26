@@ -114,3 +114,55 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     await wallet.db.close();
   }
 });
+
+test('queued PostgreSQL carrot grants reject revoked roles, logged-out sessions and banned accounts', { timeout: 15000 }, async () => {
+  const database = new PGlite();
+  let gate;
+  const wallet = new PostgresWallet({
+    query: (sql, args) => database.query(sql, args),
+    connect: async () => {
+      if (gate) {
+        const pending = gate;
+        gate = null;
+        pending.entered();
+        await pending.release;
+      }
+      return { query: (sql, args) => database.query(sql, args), release() {} };
+    },
+    end: () => database.close(),
+  });
+  try {
+    wallet.db.exec = sql => database.exec(sql);
+    await wallet.initialize();
+    const admin = await wallet.register({ email: 'queued-admin@example.test', name: 'Admin', password: 'fixture-1234' });
+    const recipient = await wallet.register({ email: 'recipient@example.test', name: 'Recipient', password: 'fixture-1234' });
+    for (const [index, revoke] of ['role', 'session', 'ban'].entries()) {
+      await wallet.db.run("DELETE FROM account_controls WHERE account_id = ?", admin.profile.id);
+      await wallet.setAdmin(admin.profile.id, true);
+      const session = await wallet.login({ email: 'queued-admin@example.test', password: 'fixture-1234' });
+      let entered, release;
+      const ready = new Promise(resolve => { entered = resolve; });
+      gate = { entered, release: new Promise(resolve => { release = resolve; }) };
+      const requestId = String(index + 1).repeat(32);
+      const adjustment = wallet.adminAdjust(session.token, { accountId: recipient.profile.id,
+        amount: 5000, reason: 'Queued grant', requestId });
+      // Revoke access while the request waits for its database connection.
+      await ready;
+      if (revoke === 'role') await wallet.setAdmin(admin.profile.id, false);
+      else if (revoke === 'session') await wallet.logout(session.token);
+      else await wallet.db.run("INSERT INTO account_controls VALUES (?, 'banned', 'test', ?)", admin.profile.id, Date.now());
+      release();
+      assert.equal((await adjustment).ok, false, revoke);
+      assert.equal((await wallet.profile(recipient.profile.id)).carrots, 1000, revoke);
+      assert.equal(await wallet.db.get('SELECT 1 FROM admin_adjustments WHERE request_id = ?', requestId), undefined);
+    }
+    await wallet.db.run('DELETE FROM account_controls WHERE account_id = ?', admin.profile.id);
+    await wallet.setAdmin(admin.profile.id, false);
+    await wallet.db.run('INSERT INTO managers VALUES (1, ?)', admin.profile.id);
+    const manager = await wallet.login({ email: 'queued-admin@example.test', password: 'fixture-1234' });
+    const granted = await wallet.adminAdjust(manager.token, { accountId: recipient.profile.id,
+      amount: 5000, reason: 'Manager grant', requestId: 'f'.repeat(32) });
+    assert.equal(granted.ok, true);
+    assert.equal(granted.target.carrots, 6000);
+  } finally { await wallet.db.close(); }
+});
