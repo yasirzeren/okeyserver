@@ -19,7 +19,9 @@ HTTPS adresine `/admob/ssv` ekleyerek ayarla. Canlı sunucu için örnek adres:
 İstemci önce `market_ad_offer` ile hesaba, amaca ve reklam birimine bağlı bir
 işlem açar. Yanıttaki `customData` reklam gösterilmeden önce SDK'nın SSV
 ayarlarına yazılır. Doğrulama sunucusu Google'ın HTTPS anahtarlarını altı saat
-önbellekler ve değiştirilmemiş sorgu metninin ECDSA SHA256 imzasını doğrular.
+önbellekler ve Google'ın Tink referansı gibi sorgu metnindeki yüzde kodlarını
+bir kez çözerek ECDSA SHA256 imzasını doğrular. Parametre sırası ve gerçek
+`+` karakterleri korunur; sorgu yeniden oluşturulmaz.
 Geçerli imza, işlem kimliği, reklam birimi, süre ve günlük hak eşleştiğinde
 ödül atomik kaydedilir. Aynı callback yeniden geldiğinde ödül tekrarlanmaz.
 
@@ -36,6 +38,11 @@ Emoji, aynı günlük dönem içinde iki doğrulanmış gösterim gerektirir.
 Başlangıç hediyesi 1000, günlük hediye 500 havuçtur.
 
 SSV doğrulaması: https://developers.google.com/admob/android/ssv
+
+AdMob panelindeki URL doğrulamasında Özel veriler alanına
+`bunny101-admob-setup-check` yaz. Bu işaretçi yalnızca Google'ın üretim veya
+resmi test anahtarlarıyla doğrulanır ve cüzdana erişmeden bağlantıyı kontrol
+eder. Gerçek reklam teklifleri yalnızca üretim anahtarlarıyla kabul edilir.
 
 SDK veri açıklaması: https://developers.google.com/admob/android/privacy/play-data-disclosure
 
