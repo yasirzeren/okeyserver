@@ -3,6 +3,7 @@ const {randomBytes,createHash}=require('node:crypto');
 const fail=message=>({ok:false,message});
 function anonymizeStatements(id) {
   return [
+    ...['market_ad_transactions','market_ad_offers','market_ad_daily','market_purchases','market_inventory'].map(table=>({sql:`DELETE FROM ${table} WHERE account_id = ?`,args:[id]})),
     {sql:'DELETE FROM sessions WHERE account_id = ?',args:[id]},
     {sql:'DELETE FROM admins WHERE account_id = ?',args:[id]},
     {sql:'DELETE FROM managers WHERE account_id = ?',args:[id]},

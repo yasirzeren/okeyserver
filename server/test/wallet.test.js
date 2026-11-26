@@ -131,11 +131,11 @@ test('daily reward is issued once per Turkish noon and expires unclaimed gifts w
     wallet.grantDaily(noon + 1000);
     assert.equal(wallet.profile(a).carrots, 1000);
     assert.equal(wallet.account(token, noon + 1000).pendingDaily, 1);
-    assert.equal(wallet.claimDaily(token, noon + 1000).profile.carrots, 2000);
-    assert.equal(wallet.claimDaily(token, noon + 1000).profile.carrots, 2000);
+    assert.equal(wallet.claimDaily(token, noon + 1000).profile.carrots, 1500);
+    assert.equal(wallet.claimDaily(token, noon + 1000).profile.carrots, 1500);
     wallet.grantDaily(noon + 2 * 86400000);
     assert.equal(wallet.account(token, noon + 2 * 86400000).pendingDaily, 1);
-    assert.equal(wallet.claimDaily(token, noon + 2 * 86400000).profile.carrots, 3000);
+    assert.equal(wallet.claimDaily(token, noon + 2 * 86400000).profile.carrots, 2000);
   } finally {
     wallet.db.close();
   }

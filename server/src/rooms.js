@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { Game } = require('./game');
 const bot = require('./bot');
 const { DAY_MS, latestRewardTime } = require('./carrot_policy');
+const { emojiById } = require('./emoji_catalog');
 
 const INDICATOR_MS = 5000;
 const TURN_MS = 30000; // her oyuncunun sıra süresi
@@ -974,6 +975,26 @@ class RoomManager {
   }
 
   // ------------------------------------------------------------------ sohbet
+  async sendEmoji(socket, { emojiId, targetSeat } = {}) {
+    const c = this.ctx(socket), emoji = emojiById(emojiId);
+    if (!c) return fail('Bir odada değilsin.');
+    const { room, member } = c;
+    if (!emoji || !Number.isInteger(targetSeat) || targetSeat < 0 || targetSeat > 3 || !room.members[targetSeat]) return fail('Geçersiz emoji veya oyuncu.');
+    const now = Date.now(), target = room.members[targetSeat];
+    if (member.emojiSending || now - (member.lastEmoji ?? 0) < 3000) return fail('Emoji göndermek için 3 saniye bekle.');
+    member.emojiSending = true;
+    try {
+      if (!await this.market?.canUse(member.accountId, emojiId)) return fail('Bu emoji sende yok veya süresi dolmuş.');
+      const current = this.ctx(socket);
+      if (!current || current.room !== room || current.member !== member || room.closed || room.members[targetSeat] !== target) return fail('Masa durumu değişti.');
+      member.lastEmoji = Date.now();
+      const reaction = { id: crypto.randomUUID(), emojiId, glyph: emoji.glyph, fromSeat: member.seat, targetSeat, time: member.lastEmoji };
+      room.touch();
+      for (const viewer of room.humans()) room.emitTo(viewer, 'emoji_reaction', reaction);
+      return ok('Gönderildi.');
+    } finally { member.emojiSending = false; }
+  }
+
   chat(socket, d) {
     const c = this.ctx(socket);
     if (!c) return fail('Bir odada değilsin.');

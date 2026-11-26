@@ -68,6 +68,7 @@ class PostgresWallet {
       CREATE INDEX IF NOT EXISTS held_matches ON matches(expires) WHERE status = 'held';
     `);
     await this.db.exec(require('./management_schema').replace('bunny_manager_email_hash(email)', "encode(sha256(convert_to(email, 'UTF8')), 'hex')"));
+    await this.db.exec(require('./market_schema'));
   }
 
   async credit(db, id, ref, amount, reason) {

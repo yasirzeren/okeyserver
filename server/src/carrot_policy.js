@@ -1,7 +1,7 @@
 'use strict';
 
 const ROOM_COST = 400;
-const DAILY_CARROTS = 1000;
+const DAILY_CARROTS = 500;
 const DAY_MS = 86400000;
 
 // Türkiye uses UTC+3, so local noon is 09:00 UTC.

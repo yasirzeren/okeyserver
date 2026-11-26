@@ -89,24 +89,24 @@ test('PostgreSQL wallet settles a match and refunds expired entries exactly once
     await wallet.grantDaily(noon + 1000);
     assert.deepEqual(await balances(), beforeReward);
     assert.equal((await wallet.account(recovered.token, noon + 1000)).pendingDaily, 1);
-    assert.equal((await wallet.claimDaily(recovered.token, noon + 1000)).profile.carrots, beforeReward[0] + 1000);
-    assert.equal((await wallet.claimDaily(recovered.token, noon + 1000)).profile.carrots, beforeReward[0] + 1000);
+    assert.equal((await wallet.claimDaily(recovered.token, noon + 1000)).profile.carrots, beforeReward[0] + 500);
+    assert.equal((await wallet.claimDaily(recovered.token, noon + 1000)).profile.carrots, beforeReward[0] + 500);
     const tomorrow = noon + 86400000;
     const following = noon + 2 * 86400000;
     await wallet.grantDaily(tomorrow);
     const unclaimed = await wallet.account(recovered.token, tomorrow);
     assert.equal(unclaimed.pendingDaily, 1);
-    assert.equal(unclaimed.profile.carrots, beforeReward[0] + 1000);
+    assert.equal(unclaimed.profile.carrots, beforeReward[0] + 500);
     await wallet.grantDaily(following);
     assert.equal((await wallet.account(recovered.token, following)).pendingDaily, 1);
     assert.equal((await wallet.claimDaily(recovered.token, following)).profile.carrots,
-      beforeReward[0] + 2000);
+      beforeReward[0] + 1000);
     assert.equal((await wallet.claimDaily(recovered.token, following)).profile.carrots,
-      beforeReward[0] + 2000);
+      beforeReward[0] + 1000);
     assert.equal((await wallet.account(recovered.token, following)).movements, undefined);
     assert.equal((await wallet.account(recovered.token, following)).profile.email, 'p0@example.test');
     const activity = await wallet.activity(recovered.token);
-    assert.equal(activity.balance, beforeReward[0] + 2000);
+    assert.equal(activity.balance, beforeReward[0] + 1000);
     assert.equal(activity.movements.length, 5);
     assert.equal(activity.movements.every(m => m.amount !== 0), true);
     assert.equal((await wallet.activity('invalid')).ok, false);

@@ -55,6 +55,7 @@ class Wallet {
     `);
     this.db.function('bunny_manager_email_hash', {deterministic:true}, (email) => createHash('sha256').update(email).digest('hex'));
     this.db.exec(require('./management_schema'));
+    this.db.exec(require('./market_schema'));
     // The game state lives in memory. After a restart its unfinished matches
     // cannot resume, so release their entries from the persistent wallet.
     if (recoverPending) {

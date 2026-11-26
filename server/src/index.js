@@ -3,6 +3,8 @@ const { Social } = require('./social');
 const { Management } = require('./management');
 const { AccountLifecycle } = require('./account_lifecycle');
 const { publicPage } = require('./public_pages');
+const { Market } = require('./market');
+const { createAdmobHandler } = require('./admob_ssv');
 const { createHash } = require('node:crypto');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -17,7 +19,10 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true }));
     return;
   }
-  try { if (await publicPage(req,res,accountLifecycle)) return; } catch(error) { console.error('Public page:',error.code||error.name); res.writeHead(500);res.end('İşlem tamamlanamadı.');return; }
+  try {
+    if (await admobHandler(req,res)) return;
+    if (await publicPage(req,res,accountLifecycle)) return;
+  } catch(error) { console.error('Public page:',error.code||error.name); res.writeHead(500);res.end('İşlem tamamlanamadı.');return; }
   res.writeHead(404);
   res.end();
 });
@@ -51,6 +56,8 @@ let wallet;
 let manager;
 let management;
 let accountLifecycle;
+let market;
+let admobHandler = createAdmobHandler(null);
 const authAttempts = new Map();
 const clearAttempts = setInterval(() => authAttempts.clear(), 60000);
 clearAttempts.unref();
@@ -103,6 +110,12 @@ io.on('connection', (socket) => {
   on('claim_daily', (d) => wallet?.claimDaily(d.token) ?? walletUnavailable);
   on('account_profile', (d) => wallet?.account(d.token) ?? walletUnavailable);
   on('wallet_activity', (d) => wallet?.activity(d.token) ?? walletUnavailable);
+  on('market_catalog', (d) => market?.catalog(d.token) ?? walletUnavailable);
+  on('market_inventory', (d) => market?.inventory(d.token) ?? walletUnavailable);
+  on('market_buy_emoji', (d) => market?.buy(d.token,d) ?? walletUnavailable);
+  on('market_ad_offer', (d) => market?.offer(d.token,d) ?? walletUnavailable);
+  on('market_ad_status', (d) => market?.status(d.token,d.offerId) ?? walletUnavailable);
+  on('market_ad_cancel', (d) => market?.cancel(d.token,d.offerId) ?? walletUnavailable);
   on('account_logout', (d) => wallet?.logout(d.token) ?? walletUnavailable);
 
   on('account_delete', (d) => accountLifecycle ? auth(socket, () => accountLifecycle.remove(d.token,d.password,d.confirmation)) : walletUnavailable);
@@ -135,6 +148,7 @@ io.on('connection', (socket) => {
   on('start_game', () => manager.startGame(socket));
   on('leave_room', () => manager.leaveRoom(socket));
   on('chat', (d) => manager.chat(socket, d));
+  on('emoji_send', (d) => manager.sendEmoji(socket, d));
   on('draw', () => manager.draw(socket));
   on('take_side', () => manager.takeSide(socket));
   on('return_side', () => manager.returnSide(socket));
@@ -160,6 +174,10 @@ async function start() {
   wallet = await createWallet();
   manager = new RoomManager(io, wallet);
   if (wallet) {
+    market = new Market(wallet);
+    await market.initialize();
+    manager.market = market;
+    admobHandler = createAdmobHandler(market);
     manager.social = new Social(wallet);
     await manager.social.initialize();
     management = new Management(wallet, manager, io, manager.social.db);
