@@ -230,27 +230,6 @@ class Wallet {
       ).all(id),
     }));
   }
-  holdRoom(id, payer) {
-    return this.transaction(() => {
-      if ((this.profile(payer)?.carrots ?? 0) < ROOM_COST) return fail('Oda açmak için 400 havucun olmalı.');
-      this.db.prepare("INSERT INTO matches VALUES (?, ?, 'held')")
-        .run(id, JSON.stringify({ payer, players: [] }));
-      this.credit(payer, `entry:${id}`, -ROOM_COST, 'Masa açılış ücreti');
-      return { ok: true };
-    });
-  }
-
-  setRoomPlayers(id, players) {
-    return this.transaction(() => {
-      const row = this.db.prepare("SELECT account_ids FROM matches WHERE id = ? AND status = 'held'").get(id);
-      if (!row) return false;
-      const entry = JSON.parse(row.account_ids);
-      this.db.prepare('UPDATE matches SET account_ids = ? WHERE id = ?')
-        .run(JSON.stringify({ ...entry, players }), id);
-      return true;
-    });
-  }
-
   claimDaily(token, now = Date.now()) {
     const id = this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');

@@ -295,28 +295,6 @@ class PostgresWallet {
     });
   }
 
-  async holdRoom(id, payer) {
-    return this.db.transaction(async (db) => {
-      if (((await this.profile(payer, db, true))?.carrots ?? 0) < ROOM_COST) {
-        return fail('Oda açmak için 400 havucun olmalı.');
-      }
-      await db.run("INSERT INTO matches VALUES (?, ?, 'held', ?)",
-        id, JSON.stringify({ payer, players: [] }), Date.now() + MATCH_LEASE);
-      await this.credit(db, payer, `entry:${id}`, -ROOM_COST, 'Masa açılış ücreti');
-      return { ok: true };
-    });
-  }
-
-  async setRoomPlayers(id, players) {
-    return this.db.transaction(async (db) => {
-      const row = await db.get("SELECT account_ids FROM matches WHERE id = ? AND status = 'held'" + db.lock, id);
-      if (!row) return false;
-      await db.run('UPDATE matches SET account_ids = ? WHERE id = ?',
-        JSON.stringify({ ...row.account_ids, players }), id);
-      return true;
-    });
-  }
-
   async claimDaily(token, now = Date.now()) {
     const id = await this.authenticate(token);
     if (!id) return fail('Oturum açman gerekiyor.');

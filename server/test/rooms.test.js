@@ -20,7 +20,6 @@ function setup() {
   const mgr = new RoomManager(io, {
     authenticate: async (token) => token || null,
     hold: async () => ({ ok: true }),
-    setRoomPlayers: async () => true,
     settle: async () => true,
     profile: async (id) => ({ id, name: id === 'a' ? 'Ali' : id === 'b' ? 'Veli' : id, carrots: 1000 }),
   });
