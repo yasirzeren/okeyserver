@@ -3,12 +3,14 @@ module.exports = `
   CREATE TABLE IF NOT EXISTS market_inventory (
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     emoji_id TEXT NOT NULL, expires BIGINT NOT NULL,
+    permanent INTEGER NOT NULL DEFAULT 0 CHECK(permanent IN (0, 1)),
     PRIMARY KEY(account_id, emoji_id)
   );
   CREATE TABLE IF NOT EXISTS market_purchases (
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     request_id TEXT NOT NULL, emoji_id TEXT NOT NULL,
     expires BIGINT NOT NULL, created BIGINT NOT NULL,
+    duration TEXT NOT NULL DEFAULT 'rental' CHECK(duration IN ('rental', 'permanent')),
     PRIMARY KEY(account_id, request_id)
   );
   CREATE TABLE IF NOT EXISTS market_ad_daily (

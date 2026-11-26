@@ -5,7 +5,7 @@ const { Wallet } = require('../src/wallet');
 const { PostgresWallet } = require('../src/postgres_wallet');
 const { PGlite } = require('@electric-sql/pglite');
 const { Market } = require('../src/market');
-const { EMOJIS, RENTAL_MS, AD_REWARDS } = require('../src/emoji_catalog');
+const { EMOJIS, RENTAL_MS, EMOJI_PERMANENT_PRICE, AD_REWARDS } = require('../src/emoji_catalog');
 const { latestRewardTime, DAY_MS } = require('../src/carrot_policy');
 const { Social } = require('../src/social');
 const { Management } = require('../src/management');
@@ -54,6 +54,7 @@ for (const pg of [false, true]) test(`${pg ? 'PostgreSQL' : 'SQLite'} market: re
     const initial = await market.catalog(token);
     assert.equal(initial.balance, 1000);
     assert.equal(initial.catalog.length, 20);
+    assert.equal(initial.catalog.every(emoji => emoji.priceCarrots === 1000 && emoji.permanentPriceCarrots === 50000), true);
     assert.deepEqual(['rabbit', 'love', 'fun'].map(cat => EMOJIS.filter(e => e.category === cat).length), [6, 6, 8]);
     assert.equal(initial.ads.used, 0);
     assert.deepEqual(initial.ads.rewards, [200, 250, 300, 350, 400]);
@@ -151,5 +152,101 @@ for (const pg of [false, true]) test(`${pg ? 'PostgreSQL' : 'SQLite'} market: re
     for (const table of ['market_inventory', 'market_purchases', 'market_ad_daily', 'market_ad_offers', 'market_ad_transactions']) {
       assert.equal(Number((await db.get(`SELECT COUNT(*) AS n FROM ${table} WHERE account_id = ?`, id)).n), 0);
     }
+  } finally { await f.close(); }
+});
+
+for (const pg of [false, true]) test(`${pg ? 'PostgreSQL' : 'SQLite'} market: permanent ownership, upgrades and atomic purchases`, async () => {
+  const f = await setup(pg), { market, account, db, wallet } = f;
+  const { token, profile: { id } } = account;
+  const emojiId = 'bunny_face';
+  const originalTime = f.now();
+  const permanent = { emojiId, requestId: 'permanent_purchase_0001', duration: 'permanent' };
+  try {
+    await db.run('UPDATE accounts SET carrots = ? WHERE id = ?', EMOJI_PERMANENT_PRICE - 1, id);
+    assert.equal((await market.buy(token, permanent)).code, 'insufficient_balance');
+    assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM market_purchases WHERE account_id = ?', id)).n), 0);
+    assert.equal((await market.catalog(token)).balance, EMOJI_PERMANENT_PRICE - 1);
+
+    // Old callers omit duration and still buy a three-day rental.
+    await db.run('UPDATE accounts SET carrots = 1000 WHERE id = ?', id);
+    const rental = await market.buy(token, { emojiId, requestId: 'rental_purchase_000001' });
+    assert.deepEqual(rental.inventory, [{ emojiId, permanent: false, expiresAt: originalTime + RENTAL_MS }]);
+    assert.equal((await market.buy(token, { emojiId, requestId: 'rental_purchase_again' })).code, 'already_owned');
+
+    // Upgrades cost the full permanent price once, even for racing retries.
+    await db.run('UPDATE accounts SET carrots = ? WHERE id = ?', EMOJI_PERMANENT_PRICE, id);
+    const responses = await Promise.all([market.buy(token, permanent), market.buy(token, permanent)]);
+    assert.equal(responses.every(row => row.ok), true);
+    assert.equal(responses.filter(row => row.duplicate).length, 1);
+    assert.equal((await market.catalog(token)).balance, 0);
+    assert.deepEqual((await market.catalog(token)).inventory, [{ emojiId, permanent: true, expiresAt: null }]);
+    assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM movements WHERE account_id = ? AND ref = ?', id, 'emoji:' + permanent.requestId)).n), 1);
+    assert.equal((await market.buy(token, { ...permanent, duration: 'rental' })).ok, false);
+    assert.equal((await market.buy(token, { ...permanent, requestId: 'new_permanent_attempt' })).code, 'already_owned');
+    assert.equal((await market.buy(token, { ...permanent, requestId: 'new_rental_attempt_01', duration: 'rental' })).code, 'already_owned');
+    assert.equal((await market.buy(token, { ...permanent, duration: 'invalid' })).ok, false);
+    assert.equal((await market.buy(token, { ...permanent, duration: null })).ok, false);
+    f.setNow(originalTime + 3650 * DAY_MS);
+    assert.equal(await market.canUse(id, emojiId), true);
+    assert.equal((await market.catalog(token)).inventory[0].permanent, true);
+    f.setNow(originalTime);
+
+    await db.run('UPDATE accounts SET carrots = ? WHERE id = ?', 2 * EMOJI_PERMANENT_PRICE, id);
+    const competing = await Promise.all(['first', 'second'].map(suffix => market.buy(token,
+      { emojiId: 'fun_fire', duration: 'permanent', requestId: 'competing_permanent_' + suffix })));
+    assert.equal(competing.filter(row => row.ok).length, 1);
+    assert.equal(competing.filter(row => row.code === 'already_owned').length, 1);
+    assert.equal((await market.catalog(token)).balance, EMOJI_PERMANENT_PRICE);
+
+    // A pending second ad may arrive after an upgrade. It cannot downgrade or
+    // assign an expiry to a permanent emoji, even when the callback is retried.
+    const offer = () => market.offer(token, { purpose: 'emoji', emojiId: 'love_heart', platform: 'android' });
+    const verified = (ad, transactionId) => market.applyVerified({ offerId: ad.offerId,
+      transactionId, adUnit: UNIT.split('/')[1], timestamp: f.now() });
+    const first = await offer();
+    assert.equal((await verified(first, 'permanent_race_ad_first')).ok, true);
+    const second = await offer();
+    assert.equal((await market.buy(token, { emojiId: 'love_heart', duration: 'permanent', requestId: 'upgrade_during_ad_001' })).ok, true);
+    assert.equal((await verified(second, 'permanent_race_ad_second')).ok, true);
+    assert.equal((await verified(second, 'permanent_race_ad_second')).duplicate, true);
+    assert.deepEqual((await market.catalog(token)).inventory.find(row => row.emojiId === 'love_heart'),
+      { emojiId: 'love_heart', permanent: true, expiresAt: null });
+    assert.equal((await offer()).code, 'already_owned');
+
+    // A failing ledger insert rolls the purchase record back as well as money.
+    await db.run('UPDATE accounts SET carrots = ? WHERE id = ?', EMOJI_PERMANENT_PRICE, id);
+    const blockedId = 'failed_permanent_txn_01';
+    await db.run('INSERT INTO movements (account_id, ref, amount, reason, time) VALUES (?, ?, ?, ?, ?)', id, 'emoji:' + blockedId, 0, 'test conflict', f.now());
+    await assert.rejects(market.buy(token, { emojiId: 'fun_luck', duration: 'permanent', requestId: blockedId }));
+    assert.equal((await market.catalog(token)).balance, EMOJI_PERMANENT_PRICE);
+    assert.equal(await db.get('SELECT 1 FROM market_purchases WHERE account_id = ? AND request_id = ?', id, blockedId), undefined);
+    assert.equal(await market.canUse(id, 'fun_luck'), false);
+
+    const social = new Social(wallet); await social.initialize();
+    const management = new Management(wallet, { rooms: new Map(), ctx: () => null, leaveRoom() {} }, { of: () => ({ sockets: new Map() }) }, social.db);
+    assert.equal((await new AccountLifecycle(wallet, management).remove(token, 'market-pass-2026', 'SİL')).ok, true);
+    assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM market_inventory WHERE account_id = ?', id)).n), 0);
+  } finally { await f.close(); }
+});
+
+for (const pg of [false, true]) test(`${pg ? 'PostgreSQL' : 'SQLite'} market: existing rental database migrates without losing purchases`, async () => {
+  const f = await setup(pg), { market, account, db } = f;
+  const { token, profile: { id } } = account;
+  const requestId = 'legacy_purchase_request';
+  const expires = f.now() + RENTAL_MS;
+  try {
+    // Recreate the exact old columns, with existing ownership and replay keys.
+    await db.exec('ALTER TABLE market_inventory DROP COLUMN permanent; ALTER TABLE market_purchases DROP COLUMN duration;');
+    await db.run('INSERT INTO market_inventory (account_id, emoji_id, expires) VALUES (?, ?, ?)', id, 'bunny_hop', expires);
+    await db.run('INSERT INTO market_purchases (account_id, request_id, emoji_id, expires, created) VALUES (?, ?, ?, ?, ?)', id, requestId, 'bunny_hop', expires, f.now());
+    await market.initialize();
+    await market.initialize();
+    assert.deepEqual((await market.catalog(token)).inventory, [{ emojiId: 'bunny_hop', permanent: false, expiresAt: expires }]);
+    assert.equal((await market.buy(token, { emojiId: 'bunny_hop', requestId })).duplicate, true);
+    assert.equal((await market.buy(token, { emojiId: 'bunny_hop', requestId, duration: 'permanent' })).ok, false);
+    assert.equal((await market.catalog(token)).balance, 1000);
+    f.setNow(expires + 1);
+    assert.equal(await market.canUse(id, 'bunny_hop'), false);
+    assert.equal((await market.catalog(token)).inventory.length, 0);
   } finally { await f.close(); }
 });

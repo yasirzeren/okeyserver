@@ -3,8 +3,24 @@
 Android ve iOS için AdMob'da oluşturulan üretim ödüllü birimleri `src/admob_config.js`
 içinde varsayılan olarak tanımlıdır. Bu kimlikler herkese açık entegrasyon
 bilgileridir, şifre veya gizli API anahtarı değildir. İstemci geri çağrısı tek başına havuç veya emoji
-kazandırmaz; Google SSV doğrulaması gerekir. Emoji satın alma ve 72 saatlik
-kullanım açıktır.
+kazandırmaz; Google SSV doğrulaması gerekir. Emoji satın alma hem 72 saatlik
+hem de sınırsız kullanım için açıktır.
+
+20 emoji tek listede sunulur. Her emojinin 3 günlük kullanımı 1.000, sınırsız
+kullanımı 50.000 havuçtur. `market_buy_emoji` isteğinde `duration: 'rental'`
+veya `duration: 'permanent'` gönderilir; eski istemciler alanı göndermediğinde
+3 günlük satın alma yapılır. Katalogda `priceCarrots` ve
+`permanentPriceCarrots` fiyatları bulunur. Envanterde `permanent: true` olan
+ürünlerin `expiresAt` alanı `null` döner ve kullanımı sona ermez.
+
+Aktif kiralama, 50.000 havuç ödenerek sınırsız kullanıma yükseltilebilir;
+kalan kiralama süresi için indirim uygulanmaz. Sınırsız sahip olunan emoji
+yeniden ücretlendirilemez. Aynı satın alma anahtarı yalnızca aynı emoji ve
+kullanım türü için tekrar kullanılabilir. Bakiye kesintisi, işlem kaydı ve
+envanter değişikliği aynı veritabanı işlemi içindedir. Sunucu başlangıcında
+eski SQLite/PostgreSQL envanterleri ve işlem anahtarları korunarak yeni
+kalıcı sahiplik alanları eklenir. Reklamlar yalnızca 3 günlük kullanım verir;
+gecikmiş reklam doğrulaması sınırsız sahipliği süreli kullanıma dönüştürmez.
 
 Flutter'da aynı hesaba ait Android uygulama kimliği
 `ca-app-pub-6003559032392528~3194936019`, ödüllü birim kimliği

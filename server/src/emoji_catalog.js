@@ -2,6 +2,7 @@
 
 const RENTAL_MS = 3 * 86400000;
 const EMOJI_PRICE = 1000;
+const EMOJI_PERMANENT_PRICE = 50000;
 const EMOJI_AD_VIEWS = 2;
 const AD_REWARDS = Object.freeze([200, 250, 300, 350, 400]);
 const rows = [
@@ -28,7 +29,8 @@ const rows = [
 ];
 const EMOJIS = Object.freeze(rows.map(([id, glyph, name, category]) => Object.freeze({
   id, glyph, name, category, priceCarrots: EMOJI_PRICE,
+  permanentPriceCarrots: EMOJI_PERMANENT_PRICE,
   durationSeconds: RENTAL_MS / 1000, adViewsRequired: EMOJI_AD_VIEWS,
 })));
 const emojiById = (id) => EMOJIS.find((emoji) => emoji.id === id);
-module.exports = { EMOJIS, emojiById, RENTAL_MS, EMOJI_PRICE, EMOJI_AD_VIEWS, AD_REWARDS };
+module.exports = { EMOJIS, emojiById, RENTAL_MS, EMOJI_PRICE, EMOJI_PERMANENT_PRICE, EMOJI_AD_VIEWS, AD_REWARDS };

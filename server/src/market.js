@@ -1,7 +1,7 @@
 'use strict';
 const { randomBytes } = require('node:crypto');
 const { DAY_MS, latestRewardTime } = require('./carrot_policy');
-const { EMOJIS, emojiById, RENTAL_MS, EMOJI_PRICE, EMOJI_AD_VIEWS, AD_REWARDS } = require('./emoji_catalog');
+const { EMOJIS, emojiById, RENTAL_MS, EMOJI_PRICE, EMOJI_PERMANENT_PRICE, EMOJI_AD_VIEWS, AD_REWARDS } = require('./emoji_catalog');
 const { readAdmobUnits, validAdmobUnits } = require('./admob_config');
 const fail = (message, code = 'market_error') => ({ ok: false, message, code });
 const query = (kind, sql, ...args) => ({ kind, sql, args });
@@ -44,7 +44,28 @@ class Market {
     this.now = now;
     this.units = units == null ? readAdmobUnits() : validAdmobUnits(units);
   }
-  async initialize() { await this.db.exec(require('./market_schema')); }
+  async initialize() {
+    await this.db.exec(require('./market_schema'));
+    // CREATE IF NOT EXISTS leaves existing rental-only tables unchanged.
+    // Keep their expiry values and purchase keys while adding ownership mode.
+    const additions = [
+      ['market_inventory', 'permanent', 'INTEGER NOT NULL DEFAULT 0 CHECK(permanent IN (0, 1))'],
+      ['market_purchases', 'duration', "TEXT NOT NULL DEFAULT 'rental' CHECK(duration IN ('rental', 'permanent'))"],
+    ];
+    if (this.sqlite) {
+      this.wallet.transaction(() => {
+        for (const [table, column, definition] of additions) {
+          if (!this.db.all(`PRAGMA table_info(${table})`).some(row => row.name === column)) {
+            this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+          }
+        }
+      });
+    } else {
+      for (const [table, column, definition] of additions) {
+        await this.db.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+      }
+    }
+  }
   get configured() { return Object.keys(this.units).length > 0; }
   transaction(factory) {
     return this.sqlite
@@ -56,7 +77,7 @@ class Market {
     const now = this.now(), cutoff = latestRewardTime(now);
     const [account, inventory, daily, progress, completed] = await Promise.all([
       this.db.get('SELECT carrots FROM accounts WHERE id = ?', id),
-      this.db.all('SELECT emoji_id, expires FROM market_inventory WHERE account_id = ? AND expires > ? ORDER BY emoji_id', id, now),
+      this.db.all('SELECT emoji_id, expires, permanent FROM market_inventory WHERE account_id = ? AND (permanent = 1 OR expires > ?) ORDER BY emoji_id', id, now),
       this.db.get('SELECT used FROM market_ad_daily WHERE account_id = ? AND cutoff = ?', id, cutoff),
       this.db.all("SELECT emoji_id, COUNT(*) AS n FROM market_ad_offers WHERE account_id = ? AND cutoff = ? AND purpose = 'emoji' AND status = 'completed' GROUP BY emoji_id", id, cutoff),
       this.db.all("SELECT slot, purpose, emoji_id, result_amount FROM market_ad_offers WHERE account_id = ? AND cutoff = ? AND status = 'completed' ORDER BY slot", id, cutoff),
@@ -64,7 +85,9 @@ class Market {
     if (!account) return fail('Hesabına giriş yap.', 'unauthenticated');
     const used = Number(daily?.used ?? 0);
     return { ok: true, message, serverTime: now, catalog: EMOJIS,
-      inventory: inventory.map((row) => ({ emojiId: row.emoji_id, expiresAt: Number(row.expires) })),
+      inventory: inventory.map((row) => ({ emojiId: row.emoji_id,
+        permanent: Number(row.permanent) === 1,
+        expiresAt: Number(row.permanent) === 1 ? null : Number(row.expires) })),
       balance: Number(account.carrots),
       ads: { configured: this.configured, platforms: Object.keys(this.units), used,
         limit: AD_REWARDS.length, rewards: AD_REWARDS, nextReward: AD_REWARDS[used] ?? 0, resetsAt: cutoff + DAY_MS,
@@ -78,27 +101,31 @@ class Market {
     return id ? this.snapshot(id) : fail('Market için hesabına giriş yap.', 'unauthenticated');
   }
   async inventory(token) { return this.catalog(token); }
-  async buy(token, { emojiId, requestId } = {}) {
+  async buy(token, { emojiId, requestId, duration = 'rental' } = {}) {
     const id = await this.identity(token), emoji = emojiById(emojiId);
     if (!id) return fail('Market için hesabına giriş yap.', 'unauthenticated');
-    if (!emoji || typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(requestId)) return fail('Geçersiz satın alma isteği.');
-    const now = this.now();
+    if (!emoji || !['rental', 'permanent'].includes(duration) || typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{16,100}$/.test(requestId)) return fail('Geçersiz satın alma isteği.');
+    const now = this.now(), permanent = duration === 'permanent';
+    const price = permanent ? EMOJI_PERMANENT_PRICE : EMOJI_PRICE;
     const result = await this.transaction(function* (lock) {
       const account = yield get('SELECT carrots FROM accounts WHERE id = ?' + lock, id);
       if (!account || (yield get("SELECT 1 FROM account_controls WHERE account_id = ? AND status <> 'active'", id))) return fail('Hesap kullanılamıyor.', 'unauthenticated');
-      const previous = yield get('SELECT emoji_id FROM market_purchases WHERE account_id = ? AND request_id = ?', id, requestId);
-      if (previous) return previous.emoji_id === emojiId ? { ok: true, duplicate: true } : fail('Bu işlem numarası daha önce kullanıldı.');
-      const owned = yield get('SELECT expires FROM market_inventory WHERE account_id = ? AND emoji_id = ?', id, emojiId);
-      if (Number(owned?.expires ?? 0) > now) return fail('Bu emoji zaten sende. Süresi bittiğinde yeniden alabilirsin.', 'already_owned');
-      if (Number(account.carrots) < EMOJI_PRICE) return fail(`Bu emoji için ${EMOJI_PRICE} havuç gerekiyor.`, 'insufficient_balance');
-      const expires = now + RENTAL_MS;
-      yield run('INSERT INTO market_purchases VALUES (?, ?, ?, ?, ?)', id, requestId, emojiId, expires, now);
-      yield run('INSERT INTO movements (account_id, ref, amount, reason, time) VALUES (?, ?, ?, ?, ?)', id, 'emoji:' + requestId, -EMOJI_PRICE, emoji.name + ' · 3 günlük emoji', now);
-      yield run('UPDATE accounts SET carrots = carrots - ? WHERE id = ?', EMOJI_PRICE, id);
-      yield run('INSERT INTO market_inventory VALUES (?, ?, ?) ON CONFLICT(account_id, emoji_id) DO UPDATE SET expires = excluded.expires', id, emojiId, expires);
+      const previous = yield get('SELECT emoji_id, duration FROM market_purchases WHERE account_id = ? AND request_id = ?', id, requestId);
+      if (previous) return previous.emoji_id === emojiId && previous.duration === duration ? { ok: true, duplicate: true } : fail('Bu işlem numarası daha önce kullanıldı.');
+      const owned = yield get('SELECT expires, permanent FROM market_inventory WHERE account_id = ? AND emoji_id = ?', id, emojiId);
+      if (Number(owned?.permanent) === 1) return fail('Bu emoji sınırsız olarak zaten sende.', 'already_owned');
+      if (!permanent && Number(owned?.expires ?? 0) > now) return fail('Bu emoji zaten sende. Süresi bittiğinde yeniden alabilirsin.', 'already_owned');
+      if (Number(account.carrots) < price) return fail(`Bu emoji için ${price} havuç gerekiyor.`, 'insufficient_balance');
+      // Permanent inventory has an explicit flag; zero is never an expiry date
+      // exposed to clients. Preserve the legacy NOT NULL column for upgrades.
+      const expires = permanent ? 0 : now + RENTAL_MS;
+      yield run('INSERT INTO market_purchases (account_id, request_id, emoji_id, expires, created, duration) VALUES (?, ?, ?, ?, ?, ?)', id, requestId, emojiId, expires, now, duration);
+      yield run('INSERT INTO movements (account_id, ref, amount, reason, time) VALUES (?, ?, ?, ?, ?)', id, 'emoji:' + requestId, -price, emoji.name + (permanent ? ' · sınırsız emoji' : ' · 3 günlük emoji'), now);
+      yield run('UPDATE accounts SET carrots = carrots - ? WHERE id = ?', price, id);
+      yield run('INSERT INTO market_inventory (account_id, emoji_id, expires, permanent) VALUES (?, ?, ?, ?) ON CONFLICT(account_id, emoji_id) DO UPDATE SET expires = excluded.expires, permanent = excluded.permanent', id, emojiId, expires, permanent ? 1 : 0);
       return { ok: true };
     });
-    return result.ok ? { ...await this.snapshot(id, result.duplicate ? '' : 'Emoji 3 gün boyunca senin.'), duplicate: !!result.duplicate } : result;
+    return result.ok ? { ...await this.snapshot(id, result.duplicate ? '' : permanent ? 'Emoji sınırsız olarak senin.' : 'Emoji 3 gün boyunca senin.'), duplicate: !!result.duplicate } : result;
   }
   async offer(token, { purpose, emojiId, platform } = {}) {
     const id = await this.identity(token);
@@ -111,8 +138,8 @@ class Market {
       const account = yield get('SELECT id FROM accounts WHERE id = ?' + lock, id);
       if (!account || (yield get("SELECT 1 FROM account_controls WHERE account_id = ? AND status <> 'active'", id))) return fail('Hesap kullanılamıyor.', 'unauthenticated');
       if (purpose === 'emoji') {
-        const owned = yield get('SELECT expires FROM market_inventory WHERE account_id = ? AND emoji_id = ?', id, emojiId);
-        if (Number(owned?.expires ?? 0) > now) return fail('Bu emoji zaten sende.', 'already_owned');
+        const owned = yield get('SELECT expires, permanent FROM market_inventory WHERE account_id = ? AND emoji_id = ?', id, emojiId);
+        if (Number(owned?.permanent) === 1 || Number(owned?.expires ?? 0) > now) return fail('Bu emoji zaten sende.', 'already_owned');
       }
       yield run("UPDATE market_ad_offers SET status = 'expired' WHERE account_id = ? AND status = 'pending' AND expires <= ?", id, now);
       const pending = yield get("SELECT * FROM market_ad_offers WHERE account_id = ? AND cutoff = ? AND status = 'pending' AND expires > ?", id, cutoff, now);
@@ -158,7 +185,7 @@ class Market {
   }
   async canUse(id, emojiId) {
     if (!id || !emojiById(emojiId)) return false;
-    return !!await this.db.get("SELECT 1 FROM market_inventory i WHERE i.account_id = ? AND i.emoji_id = ? AND i.expires > ? AND NOT EXISTS(SELECT 1 FROM account_controls c WHERE c.account_id = i.account_id AND c.status <> 'active')", id, emojiId, this.now());
+    return !!await this.db.get("SELECT 1 FROM market_inventory i WHERE i.account_id = ? AND i.emoji_id = ? AND (i.permanent = 1 OR i.expires > ?) AND NOT EXISTS(SELECT 1 FROM account_controls c WHERE c.account_id = i.account_id AND c.status <> 'active')", id, emojiId, this.now());
   }
   // Invoked only after the HTTP layer cryptographically verifies Google's SSV.
   async applyVerified({ offerId, transactionId, adUnit, timestamp }) {
@@ -198,9 +225,10 @@ class Market {
         const views = yield get("SELECT COUNT(*) AS n FROM market_ad_offers WHERE account_id = ? AND cutoff = ? AND emoji_id = ? AND purpose = 'emoji' AND status = 'completed'", id, offer.cutoff, offer.emoji_id);
         if (Number(views.n) + 1 >= EMOJI_AD_VIEWS) {
           expires = now + RENTAL_MS;
-          const owned = yield get('SELECT expires FROM market_inventory WHERE account_id = ? AND emoji_id = ?', id, offer.emoji_id);
-          if (Number(owned?.expires ?? 0) > now) expires = Number(owned.expires);
-          else yield run('INSERT INTO market_inventory VALUES (?, ?, ?) ON CONFLICT(account_id, emoji_id) DO UPDATE SET expires = excluded.expires', id, offer.emoji_id, expires);
+          const owned = yield get('SELECT expires, permanent FROM market_inventory WHERE account_id = ? AND emoji_id = ?', id, offer.emoji_id);
+          if (Number(owned?.permanent) === 1) expires = 0;
+          else if (Number(owned?.expires ?? 0) > now) expires = Number(owned.expires);
+          else yield run('INSERT INTO market_inventory (account_id, emoji_id, expires) VALUES (?, ?, ?) ON CONFLICT(account_id, emoji_id) DO UPDATE SET expires = excluded.expires', id, offer.emoji_id, expires);
         }
       }
       yield run('UPDATE market_ad_daily SET used = used + 1 WHERE account_id = ? AND cutoff = ?', id, offer.cutoff);
