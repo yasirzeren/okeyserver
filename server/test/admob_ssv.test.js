@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { generateKeyPairSync, sign } = require('node:crypto');
-const { AdmobVerifier, createAdmobHandler, KEY_URL } = require('../src/admob_ssv');
+const { AdmobVerifier, createAdmobHandler, KEY_URL, SETUP_CHECK } = require('../src/admob_ssv');
 const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const secondPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const pem = pair.publicKey.export({ type: 'spki', format: 'pem' });
@@ -55,5 +55,26 @@ test('SSV HTTP handler fails closed and grants only a verified callback', async 
   assert.equal((await request(signed(), 'GET', createAdmobHandler({ configured: false, applyVerified: market.applyVerified }))).status, 503);
   const down = new AdmobVerifier({ fetchKeys: async () => { throw Error('network'); } });
   assert.equal((await request(signed(), 'GET', createAdmobHandler(market, down))).status, 503);
+  assert.equal(grants, 1);
+});
+
+test('signed AdMob console setup check is a no-op before and after unit setup', async () => {
+  let grants = 0;
+  const verifier = new AdmobVerifier({ fetchKeys: async () => ({ ok: true, text: async () => JSON.stringify({ keys: [{ keyId: 1, pem }] }) }) });
+  const check = signed(query.replace('a'.repeat(48), SETUP_CHECK));
+  const request = async (handler, url) => {
+    let status, body;
+    await handler({ url, method: 'GET' }, { writeHead: code => { status = code; }, end: value => { body = JSON.parse(value); } });
+    return { status, body };
+  };
+  for (const market of [null, { configured: false, applyVerified: () => { grants++; } }, { configured: true, applyVerified: () => { grants++; return { ok: false }; } }]) {
+    const handler = createAdmobHandler(market, verifier);
+    assert.deepEqual(await request(handler, check), { status: 200, body: { ok: true, verificationOnly: true } });
+    assert.equal((await request(handler, check.replace('reward_amount=1', 'reward_amount=9'))).status, 400);
+    assert.equal((await request(handler, '/admob/ssv?custom_data=' + SETUP_CHECK)).status, 400);
+  }
+  assert.equal(grants, 0);
+  const configured = createAdmobHandler({ configured: true, applyVerified: () => { grants++; return { ok: false }; } }, verifier);
+  assert.equal((await request(configured, signed(query.replace('a'.repeat(48), SETUP_CHECK + '-other')))).status, 400);
   assert.equal(grants, 1);
 });

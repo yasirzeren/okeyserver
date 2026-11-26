@@ -5,6 +5,9 @@ const { createPublicKey, verify } = require('node:crypto');
 // no environment option can replace Google's production signing keys.
 const KEY_URL = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
 const CACHE_MS = 6 * 3600000;
+// The AdMob console can send this custom_data while verifying a callback URL.
+// It is deliberately outside the 48-hex nonce format used by real offers.
+const SETUP_CHECK = 'bunny101-admob-setup-check';
 class VerificationError extends Error {}
 class KeyServiceError extends Error {}
 
@@ -71,9 +74,14 @@ function createAdmobHandler(market, verifier = new AdmobVerifier()) {
       res.end(JSON.stringify(body));
     };
     if (req.method !== 'GET') { reply(405, { ok: false }); return true; }
-    if (!market?.configured) { reply(503, { ok: false }); return true; }
     try {
       const signed = await verifier.verify(req.url);
+      // A console connectivity check must still carry a valid Google signature.
+      // Acknowledge it without entering the economy or granting any reward.
+      if (signed.offerId === SETUP_CHECK) {
+        reply(200, { ok: true, verificationOnly: true }); return true;
+      }
+      if (!market?.configured) { reply(503, { ok: false }); return true; }
       const result = await market.applyVerified(signed);
       reply(result.ok ? 200 : 400, { ok: !!result.ok });
     } catch (error) {
@@ -83,4 +91,4 @@ function createAdmobHandler(market, verifier = new AdmobVerifier()) {
   };
 }
 
-module.exports = { AdmobVerifier, createAdmobHandler, VerificationError, KeyServiceError, KEY_URL };
+module.exports = { AdmobVerifier, createAdmobHandler, VerificationError, KeyServiceError, KEY_URL, SETUP_CHECK };
