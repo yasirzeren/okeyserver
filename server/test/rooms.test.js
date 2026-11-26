@@ -60,6 +60,54 @@ test('oda kurma ve kodla katılma', async () => {
   clearInterval(mgr.sweeper);
 });
 
+test('account names override client names and remain exact when several accounts share a name', async (t) => {
+  const { io, mgr } = setup();
+  mgr.wallet.profile = async (id) => ({ id, name: 'Yasir', carrots: 1000 });
+  t.after(() => {
+    for (const room of mgr.rooms.values()) room.clearTimer();
+    clearInterval(mgr.sweeper);
+  });
+  const host = sock('socket-a');
+  const created = await mgr.createRoom(host, {
+    accountToken: 'a', password: 'test-pass', playerName: 'Counterfeit host',
+    settings: { indicatorRule: false, turnSeconds: 0 },
+  });
+  assert.equal(created.ok, true);
+  for (const id of ['b', 'c', 'd']) {
+    const player = sock(`socket-${id}`);
+    assert.equal((await mgr.joinRoom(player, {
+      code: created.code, accountToken: id, password: 'test-pass',
+      playerName: `Counterfeit ${id}`,
+    })).ok, true);
+    mgr.setReady(player, { ready: true });
+  }
+  const room = mgr.rooms.get(created.code);
+  assert.deepStrictEqual(room.members.map((m) => m.accountId), ['a', 'b', 'c', 'd']);
+  assert.deepStrictEqual(room.members.map((m) => m.name), Array(4).fill('Yasir'));
+  assert.equal((await mgr.startGame(host)).ok, true);
+  assert.deepStrictEqual(room.game.players.map((p) => p.name), Array(4).fill('Yasir'));
+  const state = io.sent.filter((event) => event.ev === 'state' && event.id === host.id).pop().data;
+  assert.deepStrictEqual(state.players.map((p) => p.name), Array(4).fill('Yasir'));
+});
+
+test('internal guest fallback ignores a supplied name while public rooms still require an account', async (t) => {
+  const { mgr } = setup();
+  t.after(() => {
+    for (const room of mgr.rooms.values()) room.clearTimer();
+    clearInterval(mgr.sweeper);
+  });
+  const created = await mgr.createRoom(sock('a'), {
+    accountToken: 'a', password: 'test-pass', settings: {},
+  });
+  const room = mgr.rooms.get(created.code);
+  assert.equal((await mgr.joinRoom(sock('anonymous'), {
+    code: created.code, password: 'test-pass', playerName: 'Counterfeit guest',
+  })).ok, false);
+  const fallback = mgr.addToRoom(sock('internal-guest'), room, null, 'Counterfeit guest');
+  assert.equal(fallback.ok, true);
+  assert.equal(room.members[fallback.seat].name, 'Sen');
+});
+
 test('kuralları yalnızca oda sahibi değiştirir', async () => {
   const { mgr } = setup();
   const a = sock('a');

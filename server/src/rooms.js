@@ -219,7 +219,8 @@ class Room {
       seat,
       token,
       accountId,
-      name: this.uniqueName(name),
+      // Account IDs distinguish seats; never alter the stored account name.
+      name: accountId != null ? name : this.uniqueName(name),
       isBot: false,
       ready: false,
       connected: true,
@@ -611,7 +612,7 @@ class RoomManager {
       room.passwordKey = crypto.randomBytes(32);
       room.passwordDigest = this.passwordDigest(room, d.password);
       room.stake = stake;
-      return this.openPaidRoom(socket, room, account, d.playerName);
+      return this.openPaidRoom(socket, room, account);
     });
   }
 
@@ -621,13 +622,13 @@ class RoomManager {
     return task;
   }
 
-  async openPaidRoom(socket, room, account, playerName) {
+  async openPaidRoom(socket, room, account) {
     if (socket.connected === false || this.ctx(socket)) return fail('Bağlantı veya oda durumu değişti.');
     if (this.rooms.size >= MAX_ROOMS) return fail('Sunucu dolu, daha sonra tekrar dene.');
     const balance = (await this.wallet.profile(account.id))?.carrots ?? 0;
     if (balance < room.stake + room.stake / 20) return fail(seatBalanceMessage(room.stake, balance));
     if (socket.connected === false || this.ctx(socket)) return fail('Bağlantı veya oda durumu değişti.');
-    return this.addToRoom(socket, room, account, playerName);
+    return this.addToRoom(socket, room, account);
   }
 
   validPassword(password) {
@@ -662,9 +663,9 @@ class RoomManager {
     });
   }
 
-  addToRoom(socket, room, account, playerName) {
+  addToRoom(socket, room, account) {
     const token = this.newToken();
-    const name = account ? account.name : cleanName(playerName, 14, 'Oyuncu');
+    const name = account ? account.name : 'Sen';
     const member = room.addHuman(token, name, socket.id, account?.id ?? null);
     if (!member) return fail('Oda dolu.');
     if (!this.rooms.has(room.code)) {
@@ -749,7 +750,7 @@ class RoomManager {
     if (room.humans().some((m) => m.accountId === accountId)) {
       return fail('Bu hesap zaten odada.');
     }
-    return this.addToRoom(socket, room, account, d.playerName);
+    return this.addToRoom(socket, room, account);
   }
 
   async resume(socket, d) {
