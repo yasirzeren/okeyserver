@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const { Game } = require('./game');
 const bot = require('./bot');
+const { offensive } = require('./community_safety');
 const { DAY_MS, latestRewardTime } = require('./carrot_policy');
 const { emojiById } = require('./emoji_catalog');
 
@@ -698,6 +699,7 @@ class RoomManager {
       return fail('100 ile 10.000 arasında, 100’ün katı bir tutar gir.');
     }
     const roomName = cleanName(d.roomName, 24, 'Oda');
+    if (offensive(roomName)) return fail('Oda adı topluluk kurallarına uygun değil.');
     if (!this.validPassword(d.password)) return fail('Oda şifresi 4–64 karakter olmalı.');
     return this.queueRoomCreation(() => {
       const room = new Room(this, this.newCode(), roomName, normalizeSettings(d.settings));

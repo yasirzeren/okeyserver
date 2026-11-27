@@ -4,7 +4,7 @@ const { Management } = require('./management');
 const { AccountLifecycle } = require('./account_lifecycle');
 const { publicPage } = require('./public_pages');
 const { Market } = require('./market');
-const { CommunitySafety } = require('./community_safety');
+const { CommunitySafety, offensive } = require('./community_safety');
 const { createAdmobHandler } = require('./admob_ssv');
 const { createHash } = require('node:crypto');
 const { healthPayload } = require('./health');
@@ -102,7 +102,9 @@ io.on('connection', (socket) => {
     });
   };
 
-  on('account_register', (d) => wallet ? auth(socket, () => wallet.register(d)) : walletUnavailable);
+  on('account_register', (d) => offensive(typeof d.name === 'string' ? d.name : '')
+    ? {ok:false, message:'Oyuncu adı topluluk kurallarına uygun değil.'}
+    : wallet ? auth(socket, () => wallet.register(d)) : walletUnavailable);
   on('account_login', (d) => wallet ? auth(socket, () => wallet.login(d)) : walletUnavailable);
   on('account_reset_send', (d) => wallet?.sendResetCode && resetSecret?.length >= 32 && mailKey && mailFrom
     ? auth(socket, () => wallet.sendResetCode(d, { secret: resetSecret, send: sendResetEmail }))
