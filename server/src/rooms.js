@@ -8,7 +8,8 @@ const { emojiById } = require('./emoji_catalog');
 const INDICATOR_MS = 5000;
 const TURN_MS = 30000; // her oyuncunun sıra süresi
 const DISCONNECTED_MS = 4000; // bağlantısı kopan oyuncunun sırası
-const NEXT_MS = 45000; // sonraki ele otomatik geçiş
+const NEXT_MS = 20000; // sonraki ele otomatik geçiş
+const LOBBY_START_MS = 20000; // dört oyuncu gelince otomatik maç başlangıcı
 const BOT_MS = 800;
 const LOBBY_GRACE_MS = 30000; // lobide bağlantı kopunca bekleme
 const IDLE_CLOSE_MS = 10 * 60 * 1000; // bağlı kimse yoksa oda kapanır
@@ -86,6 +87,12 @@ class Room {
     this.chat = [];
     this.v = 0;
     this.timer = null;
+    this.lobbyTimer = null;
+    this.lobbyStartDeadline = null;
+    this.lobbyStartMessage = null;
+    this.lobbyStartBlocked = false;
+    this.lobbyRosterKey = '';
+    this.lobbyReadyKey = '';
     this.scheduleKey = '';
     this.botBusy = false;
     this.closed = false;
@@ -110,6 +117,70 @@ class Room {
   clearTimer() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.clearLobbyStart();
+  }
+
+  clearLobbyStart() {
+    if (this.lobbyTimer) clearTimeout(this.lobbyTimer);
+    this.lobbyTimer = null;
+    this.lobbyStartDeadline = null;
+  }
+
+  lobbyFull() {
+    return !this.closed && !this.started && !this.starting &&
+      this.members.every((m) => m && !m.isBot && m.connected);
+  }
+
+  refreshLobbyStart() {
+    const rosterKey = JSON.stringify([
+      this.hostSeat, this.settings,
+      this.members.map((m) => m && [m.accountId, m.token, m.connected]),
+    ]);
+    const readyKey = this.members.map((m) => !!m?.ready).join(',');
+    if (rosterKey !== this.lobbyRosterKey) {
+      this.clearLobbyStart();
+      this.lobbyRosterKey = rosterKey;
+      this.lobbyStartBlocked = false;
+      this.lobbyStartMessage = null;
+    }
+    if (readyKey !== this.lobbyReadyKey) {
+      this.lobbyReadyKey = readyKey;
+      this.lobbyStartBlocked = false;
+      this.lobbyStartMessage = null;
+    }
+    if (!this.lobbyFull() || this.lobbyStartBlocked) {
+      this.clearLobbyStart();
+      return;
+    }
+    this.lobbyStartDeadline ??= Date.now() + LOBBY_START_MS;
+    if (this.lobbyTimer) clearTimeout(this.lobbyTimer);
+    const deadline = this.lobbyStartDeadline;
+    const delay = this.members.every((m) => m.ready)
+      ? 0 : Math.max(0, this.lobbyStartDeadline - Date.now());
+    this.lobbyTimer = setTimeout(() => {
+      if (this.lobbyStartDeadline !== deadline || this.lobbyRosterKey !== rosterKey) return;
+      return this.autoStartGame();
+    }, delay);
+    this.lobbyTimer.unref?.();
+  }
+
+  async autoStartGame() {
+    this.lobbyTimer = null;
+    if (!this.lobbyFull()) return;
+    if (!this.members.every((m) => m.ready) && Date.now() < this.lobbyStartDeadline) {
+      this.refreshLobbyStart();
+      return;
+    }
+    try {
+      const result = await this.startGame(this.members[this.hostSeat], true);
+      if (result.ok) return;
+      this.lobbyStartMessage = result.message;
+    } catch (_) {
+      this.lobbyStartMessage = 'Maç başlatılamadı. Hazır durumunu yeniden onayla.';
+    }
+    this.lobbyStartBlocked = true;
+    this.clearLobbyStart();
+    this.broadcastRoom();
   }
 
   emitTo(m, ev, data) {
@@ -133,6 +204,9 @@ class Room {
       started: this.started && !m.inLobby,
       waitingForLobby: this.started && !!m.inLobby,
       quickPlay: !!this.quickPlay,
+      serverTime: Date.now(),
+      lobbyStartDeadline: this.lobbyStartDeadline,
+      lobbyStartMessage: this.lobbyStartMessage,
       members: this.members
         .filter(Boolean)
         .map((x) => ({
@@ -146,6 +220,7 @@ class Room {
   }
 
   broadcastRoom() {
+    this.refreshLobbyStart();
     for (const m of this.humans()) this.emitTo(m, 'room', this.roomInfo(m));
   }
 
@@ -238,27 +313,36 @@ class Room {
     return m;
   }
 
-  async startGame(member) {
+  async startGame(member, automatic = false) {
     if (this.started || this.starting) return fail('Oyun zaten başlatılıyor veya başladı.');
     if (member.seat !== this.hostSeat) return fail('Oyunu yalnızca oda sahibi başlatabilir.');
+    const deadlineReached = automatic && this.lobbyStartDeadline != null &&
+      Date.now() >= this.lobbyStartDeadline;
     const waiting = this.humans().filter((m) => m.seat !== this.hostSeat && !m.ready);
-    if (waiting.length) return fail('Tüm oyuncular hazır olmalı.');
+    if ((waiting.length || (automatic && !member.ready)) && !deadlineReached) {
+      return fail('Tüm oyuncular hazır olmalı.');
+    }
     if (this.connectedHumans().length !== 4) {
       return fail('Maçı başlatmak için dört oyuncu bağlı olmalı.');
     }
     const roster = [...this.members];
     const payment = crypto.randomUUID();
+    // Eski istemcideki oda sahibinin Başlat eylemi de hazır onayıdır.
+    if (!automatic) member.ready = true;
     this.starting = true;
+    this.clearLobbyStart();
     let entry;
     try {
       entry = await this.manager.wallet.hold(payment, roster.map((m) => m.accountId), this.stake);
     } catch (error) {
+      if (!automatic) member.ready = false;
       this.manager.settleWallet(payment);
       throw error;
     } finally {
       this.starting = false;
     }
     if (!entry.ok) {
+      if (!automatic) member.ready = false;
       for (const poor of entry.insufficient ?? []) {
         const player = this.humans().find((m) => m.accountId === poor.id);
         if (!player) continue;
@@ -269,7 +353,8 @@ class Room {
     }
     if (this.closed || this.hostSeat !== member.seat ||
         roster.some((m, i) => m !== this.members[i] || !m.connected ||
-          (m.seat !== this.hostSeat && !m.ready))) {
+          (!deadlineReached && !m.ready))) {
+      if (!automatic) member.ready = false;
       this.manager.settleWallet(payment);
       return fail('Oyuncu durumu değişti. Ödeme iade ediliyor.');
     }
@@ -831,7 +916,7 @@ class RoomManager {
   setReady(socket, d) {
     const c = this.ctx(socket);
     if (!c) return fail('Bir odada değilsin.');
-    if (c.room.started) return fail('Oyun başladı.');
+    if (c.room.started || c.room.starting) return fail('Oyun başlatılıyor veya başladı.');
     c.member.ready = d.ready === true;
     c.room.touch();
     c.room.broadcastRoom();
