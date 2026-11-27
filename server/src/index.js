@@ -6,6 +6,7 @@ const { publicPage } = require('./public_pages');
 const { Market } = require('./market');
 const { createAdmobHandler } = require('./admob_ssv');
 const { createHash } = require('node:crypto');
+const { healthPayload } = require('./health');
 const http = require('http');
 const { Server } = require('socket.io');
 const { RoomManager } = require('./rooms');
@@ -15,8 +16,8 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const server = http.createServer(async (req, res) => {
   if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(healthPayload()));
     return;
   }
   try {

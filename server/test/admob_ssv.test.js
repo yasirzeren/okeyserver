@@ -71,7 +71,7 @@ test('SSV HTTP handler fails closed and grants only a verified callback', async 
   assert.equal(grants, 1);
   assert.equal((await request(signed(), 'POST')).status, 405);
   assert.equal((await request('/privacy')).handled, false);
-  assert.equal((await request(signed(), 'GET', createAdmobHandler({ configured: false, applyVerified: market.applyVerified }))).status, 503);
+  assert.equal((await request(signed(), 'GET', createAdmobHandler({ configured: false, applyVerified: market.applyVerified }, verifier))).status, 503);
   const down = new AdmobVerifier({ fetchKeys: async () => { throw Error('network'); } });
   assert.equal((await request(signed(), 'GET', createAdmobHandler(market, down))).status, 503);
   assert.equal(grants, 1);
