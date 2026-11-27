@@ -120,7 +120,7 @@ function chooseDiscard(g, p) {
   let cands = a.leftover.filter((t) => !R.isWild(okey, t));
   if (cands.length === 0) cands = hand.filter((t) => !R.isWild(okey, t));
   if (cands.length === 0) cands = [...hand];
-  const safe = cands.filter((t) => !canProcess(g, t));
+  const safe = cands.filter((t) => !g.isWorkable(t));
   if (safe.length) cands = safe; // işlek taş atıp ceza almasın
   let best = cands[0];
   let bestScore = Infinity;
@@ -145,7 +145,7 @@ function autoDiscard(g, p) {
   let c = a.leftover.filter((t) => !R.isWild(okey, t));
   if (c.length === 0) c = hand.filter((t) => !R.isWild(okey, t));
   if (c.length === 0) c = [...hand];
-  const safe = c.filter((t) => !canProcess(g, t));
+  const safe = c.filter((t) => !g.isWorkable(t));
   if (safe.length) c = safe;
   c.sort((x, y) => valueOf(x, okey) - valueOf(y, okey));
   return c[0];

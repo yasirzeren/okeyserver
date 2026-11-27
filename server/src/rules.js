@@ -196,6 +196,16 @@ function canExtend(meld, id, okey) {
     return { atEnd: true, slot: s, jokerIndex, jokerSlot: slot(missing, number) };
 }
 
+/** Match an exposed real joker's resolved value without changing the meld. */
+function canReplaceOkey(meld, id, okey, index) {
+    if (!Number.isInteger(index) || index < 0 || index >= meld.tiles.length) return false;
+    if (!isWild(okey, meld.tiles[index]) || isWild(okey, id)) return false;
+    if (meld.kind === 'set' && meld.tiles.length < 4) return false;
+    const replacement = slotOf(okey, id), represented = meld.slots[index];
+    return replacement !== null && represented !== undefined &&
+        replacement.color === represented.color && replacement.number === represented.number;
+}
+
 function extend(meld, id, by, ext) {
     if (ext.jokerIndex !== undefined) meld.slots[ext.jokerIndex] = ext.jokerSlot;
     if (ext.atEnd) {
@@ -234,6 +244,7 @@ module.exports = {
     splitOpeningGroup,
     analyzePair,
     canExtend,
+    canReplaceOkey,
     extend,
     handPenalty,
 };

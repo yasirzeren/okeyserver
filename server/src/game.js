@@ -145,16 +145,9 @@ class Game {
   }
 
   isWorkable(id) {
-    const tileSlot = R.slotOf(this.okey, id);
     return this.melds.some((m) => {
       if (m.kind !== 'pair' && R.canExtend(m, id, this.okey) !== null) return true;
-      if (tileSlot === null) return false;
-      return m.tiles.some((tile, i) => {
-        const meldSlot = m.slots[i];
-        return R.isWild(this.okey, tile) &&
-          tileSlot.color === meldSlot.color &&
-          tileSlot.number === meldSlot.number;
-      });
+      return m.tiles.some((_, i) => R.canReplaceOkey(m, id, this.okey, i));
     });
   }
 
@@ -809,9 +802,7 @@ class Game {
       return fail('Okeyi almadan önce grubu dört taşla tamamlamalısın.');
     }
     if (R.isWild(this.okey, id)) return fail('Okeyin yerine okey konamaz.');
-    const s = R.slotOf(this.okey, id);
-    const ms = m.slots[index];
-    if (s.color !== ms.color || s.number !== ms.number) {
+    if (!R.canReplaceOkey(m, id, this.okey, index)) {
       return fail('Bu taş okeyin yerine uymuyor.');
     }
     m.tiles[index] = id;
