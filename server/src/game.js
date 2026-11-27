@@ -573,6 +573,13 @@ class Game {
       pl.hand.splice(pl.hand.indexOf(u.okeyTile), 1);
       pl.hand.push(u.given);
       if (u.given === this.sideTaken) this.sideTakenUsed = false;
+      if (u.penalty) {
+        const penaltyIndex = this.penalties.indexOf(u.penalty);
+        if (penaltyIndex >= 0) {
+          this.players[u.penalty.player].score -= u.penalty.points;
+          this.penalties.splice(penaltyIndex, 1);
+        }
+      }
     }
   }
 
@@ -811,7 +818,16 @@ class Game {
     pl.hand.splice(pl.hand.indexOf(id), 1);
     pl.hand.push(cur);
     if (id === this.sideTaken) this.sideTakenUsed = true;
-    this.undo.push({ kind: 'swap', given: id, okeyTile: cur, meldId, index });
+    const sameTeam = this.settings.partners && p % 2 === m.owner % 2;
+    const penalty = p !== m.owner && !sameTeam
+      ? { round: this.round, player: m.owner, type: 'Okey aldırma', points: 101 }
+      : null;
+    if (penalty) {
+      this.players[penalty.player].score += penalty.points;
+      this.penalties.push(penalty);
+    }
+    // The charge follows the reversible swap, not a separate side effect.
+    this.undo.push({ kind: 'swap', given: id, okeyTile: cur, meldId, index, penalty });
     this.say(`${pl.name} masadaki okeyi aldı.`);
     return ok('Okey alındı.');
   }

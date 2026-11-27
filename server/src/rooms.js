@@ -15,7 +15,7 @@ const IDLE_CLOSE_MS = 10 * 60 * 1000; // bağlı kimse yoksa oda kapanır
 const MAX_ROOMS = 500;
 const CHAT_MAX = 120;
 const CHAT_GAP_MS = 700;
-const BOT_NAMES = ['Zeynep', 'Mehmet', 'Ayşe', 'Ece', 'Kaan'];
+const BOT_NAMES = ['Nida', 'Mehmet', 'Ayşe', 'Ece', 'Kaan'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ROUND_OPTIONS = [1, 2, 4, 8, 10, 12, 16, 18, 20];
 
