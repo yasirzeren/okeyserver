@@ -3,6 +3,7 @@ const { DatabaseSync } = require('node:sqlite');
 const { randomBytes, randomUUID, randomInt, createHash, scryptSync, timingSafeEqual } = require('node:crypto');
 const { mkdirSync } = require('node:fs');
 const { dirname } = require('node:path');
+const { offensive } = require('./community_safety');
 
 const STARTING_CARROTS = 1000;
 const ENTRY_CARROTS = 100;
@@ -56,6 +57,7 @@ class Wallet {
     this.db.function('bunny_manager_email_hash', {deterministic:true}, (email) => createHash('sha256').update(email).digest('hex'));
     this.db.exec(require('./management_schema'));
     this.db.exec(require('./market_schema'));
+    this.db.exec(require('./community_schema'));
     // The game state lives in memory. After a restart its unfinished matches
     // cannot resume, so release their entries from the persistent wallet.
     if (recoverPending) {
@@ -181,6 +183,7 @@ class Wallet {
     if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('Geçerli bir e-posta gir.');
     if (typeof password !== 'string' || password.length < 8 || password.length > 128) return fail('Şifre 8–128 karakter olmalı.');
     if (!name || name.length > 14 || /[\u0000-\u001f\u007f]/.test(name)) return fail('Oyuncu adı 1–14 karakter olmalı.');
+    if (offensive(name)) return fail('Uygun bir oyuncu adı seç.');
     const id = randomUUID();
     const salt = randomBytes(16).toString('hex');
     const hash = scryptSync(password, salt, 64).toString('hex');

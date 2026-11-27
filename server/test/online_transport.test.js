@@ -11,6 +11,10 @@ const { PGlite } = require('@electric-sql/pglite');
 const { Wallet } = require('../src/wallet');
 const { PostgresWallet } = require('../src/postgres_wallet');
 const { RoomManager } = require('../src/rooms');
+const { Market } = require('../src/market');
+const { Social } = require('../src/social');
+const { Management } = require('../src/management');
+const { CommunitySafety, VERSION } = require('../src/community_safety');
 
 const request = (client, event, data = {}) => new Promise((resolve, reject) => {
   client.timeout(3000).emit(event, data, (error, result) => error ? reject(error) : resolve(result));
@@ -58,13 +62,16 @@ async function fixture(pg, t) {
   t.after(close);
   const routes = { create_room: 'createRoom', join_room: 'joinRoom', set_ready: 'setReady',
     start_game: 'startGame', resume: 'resume', leave_room: 'leaveRoom', return_lobby: 'returnLobby',
-    open_groups: 'openGroups', discard: 'discard', draw: 'draw', select_seat: 'selectSeat' };
+    open_groups: 'openGroups', discard: 'discard', draw: 'draw', select_seat: 'selectSeat', chat: 'chat', emoji_send: 'sendEmoji' };
   io.on('connection', socket => {
     for (const [event, method] of Object.entries(routes)) socket.on(event, async (data, ack) => {
       try { ack(await manager[method](socket, data)); }
       catch (error) { ack({ ok: false, message: error.message }); }
     });
     socket.on('disconnect', () => manager.onDisconnect(socket));
+    socket.on('community_rules_accept', async (data, ack) => ack(await manager.safety.accept(data.token, data.version)));
+    socket.on('player_block', async (data, ack) => ack(await manager.safety.block(data.token, data)));
+    socket.on('report_chat', async (data, ack) => ack(await manager.safety.report(socket, data, 'chat')));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + server.address().port;
@@ -162,6 +169,53 @@ for (const pg of [false, true]) {
       assert.equal(await f.wallet.settle(matchId), false);
       f.manager.closeRoom(f.room, 'Repeated close');
       assert.equal(Number((await f.db.get("SELECT COUNT(*) AS n FROM movements WHERE ref = ?", 'refund:' + matchId)).n), 4);
+    } finally { await f.close(); }
+  });
+
+  test(`${label} real clients: accepted chat, report identity, blocking and game state privacy`, { timeout: 15000 }, async t => {
+    const f = await fixture(pg, t);
+    try {
+      f.manager.market = new Market(f.wallet, { units: {} }); await f.manager.market.initialize();
+      const social = new Social(f.wallet); await social.initialize();
+      const management = new Management(f.wallet, f.manager, null, social.db);
+      f.manager.safety = new CommunitySafety(f.wallet, f.manager, management); await f.manager.safety.initialize();
+      for (const account of f.accounts) await f.manager.safety.loadBlocks(account.profile.id);
+      const messages = []; f.clients[2].on('chat', message => messages.push(message));
+      assert.equal((await request(f.clients[1], 'chat', { text: 'Merhaba' })).code, 'community_rules_required');
+      assert.equal((await request(f.clients[1], 'community_rules_accept', { token: f.accounts[1].token, version: VERSION })).ok, true);
+      assert.equal((await request(f.clients[1], 'chat', { text: 'a.m.k' })).code, 'content_rejected');
+      assert.equal((await request(f.clients[1], 'chat', { text: 'Merhaba oyuncular.' })).ok, true);
+      await waitFor(() => messages.length === 1);
+      assert.equal(messages[0].senderAccountId, f.accounts[1].profile.id);
+      assert.equal((await request(f.clients[2], 'report_chat', { token: f.accounts[2].token,
+        messageId: messages[0].id, reason: 'Uygunsuz davranış bildirimi' })).ok, true);
+      assert.equal((await request(f.clients[2], 'player_block', { token: f.accounts[2].token,
+        targetAccountId: f.accounts[1].profile.id, blocked: true })).ok, true);
+      f.clients[2].disconnect();
+      await waitFor(() => !f.room.members[2].connected);
+      const resumed = await f.newClient(2), histories = [];
+      const reactions = [];
+      resumed.on('chat', message => messages.push(message));
+      resumed.on('emoji_reaction', reaction => reactions.push(reaction));
+      resumed.on('chat_history', history => histories.push(history));
+      assert.equal((await request(resumed, 'resume', { token: f.sessions[2], accountToken: f.accounts[2].token })).ok, true);
+      await waitFor(() => histories.length > 0);
+      assert.equal(histories.at(-1).some(message => message.senderAccountId === f.accounts[1].profile.id), false);
+      f.clients[2] = resumed;
+      f.room.members[1].lastChat = 0;
+      assert.equal((await request(f.clients[1], 'chat', { text: 'İkinci mesaj.' })).ok, true);
+      await request(f.clients[2], 'set_ready', { ready: true });
+      assert.equal(messages.length, 1);
+      await f.manager.market.db.run('INSERT INTO market_inventory (account_id, emoji_id, expires) VALUES (?, ?, ?)',
+        f.accounts[1].profile.id, 'bunny_face', Date.now() + 100000);
+      assert.equal((await request(f.clients[1], 'emoji_send', { emojiId: 'bunny_face', targetSeat: 2 })).ok, false);
+      assert.equal((await request(f.clients[1], 'emoji_send', { emojiId: 'bunny_face', targetSeat: 0 })).ok, true);
+      await request(f.clients[2], 'set_ready', { ready: true });
+      assert.equal(reactions.length, 0);
+      assert.equal((await f.start()).ok, true);
+      await waitFor(() => f.states.filter(Boolean).length === 4);
+      assert.equal(f.states[2].players[1].accountId, f.accounts[1].profile.id);
+      assert.equal(f.states[2].players[1].hand, undefined);
     } finally { await f.close(); }
   });
 }

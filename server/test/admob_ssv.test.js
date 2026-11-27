@@ -99,6 +99,21 @@ test('signed AdMob console setup check is a no-op before and after unit setup', 
   assert.equal(grants, 1);
 });
 
+test('SSV setup success logs are signature-gated, bounded and contain no callback identifiers', async t => {
+  const success = t.mock.method(console, 'info', () => {});
+  t.mock.method(console, 'warn', () => {});
+  const verifier = new AdmobVerifier({ fetchKeys: async () => ({ ok: true, text: async () => JSON.stringify({ keys: [{ keyId: 1, pem }] }) }) });
+  const handler = createAdmobHandler(null, verifier, verifier);
+  const check = signed(query.replace('a'.repeat(48), SETUP_CHECK));
+  const request = url => handler({ url, method: 'GET' }, { writeHead() {}, end() {} });
+  await request(check.replace('transaction_id=', 'transaction_id=tampered'));
+  assert.equal(success.mock.calls.length, 0);
+  await request(check);
+  await request(check);
+  assert.equal(success.mock.calls.length, 1);
+  assert.deepEqual(success.mock.calls[0].arguments, ['AdMob SSV setup verified']);
+});
+
 test('official test key source can only acknowledge setup marker and cannot grant offers', async (t) => {
   const warnings = t.mock.method(console, 'warn', () => {});
   let testFetches = 0, grants = 0;

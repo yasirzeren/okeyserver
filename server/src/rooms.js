@@ -113,6 +113,11 @@ class Room {
   }
 
   emitTo(m, ev, data) {
+    if (this.manager.safety && m?.accountId) {
+      if (ev === 'chat' && this.manager.safety.isBlocked(m.accountId, data.senderAccountId)) return;
+      if (ev === 'emoji_reaction' && this.manager.safety.isBlocked(m.accountId, this.members[data.fromSeat]?.accountId)) return;
+      if (ev === 'chat_history') data = data.filter(entry => !this.manager.safety.isBlocked(m.accountId, entry.senderAccountId));
+    }
     if (m && !m.isBot && m.connected && m.socketId) this.io.to(m.socketId).emit(ev, data);
   }
 
@@ -171,6 +176,7 @@ class Room {
       g.phase === 'playing' ? this.turnDeadline : null;
     for (const p of view.players) {
       const mm = this.members[p.seat];
+      p.accountId = mm.accountId ?? null;
       p.connected = mm.isBot ? true : mm.connected;
     }
     return view;
@@ -579,6 +585,7 @@ class RoomManager {
 
   async accountFor(token) {
     const id = await this.wallet?.authenticate(token);
+    if (id && this.safety) await this.safety.loadBlocks(id);
     return id ? this.wallet.profile(id) : null;
   }
 
@@ -773,6 +780,7 @@ class RoomManager {
     if (!accountId || accountId !== m.accountId) {
       return fail('Bu odaya dönmek için aynı hesaba giriş yap.');
     }
+    if (this.safety) await this.safety.loadBlocks(accountId);
     if (socket.connected === false || room.closed || room.members[s.seat] !== m ||
         m.token !== token || this.ctx(socket)) {
       return fail('Oturum artık geçerli değil.');
@@ -967,6 +975,7 @@ class RoomManager {
 
   sweep() {
     void this.maintainWallet();
+    this.safety?.prune();
     const now = Date.now();
     for (const room of [...this.rooms.values()]) {
       if (room.connectedHumans().length === 0 && now - room.lastActive > IDLE_CLOSE_MS) {
@@ -982,6 +991,7 @@ class RoomManager {
     const { room, member } = c;
     if (!emoji || !Number.isInteger(targetSeat) || targetSeat < 0 || targetSeat > 3 || !room.members[targetSeat]) return fail('Geçersiz emoji veya oyuncu.');
     const now = Date.now(), target = room.members[targetSeat];
+    if (this.safety?.isBlocked(member.accountId, target.accountId)) return fail('Engellenen oyuncuyla emoji etkileşimi kapalı.');
     if (member.emojiSending || now - (member.lastEmoji ?? 0) < 3000) return fail('Emoji göndermek için 3 saniye bekle.');
     member.emojiSending = true;
     try {
@@ -997,6 +1007,11 @@ class RoomManager {
   }
 
   chat(socket, d) {
+    if (this.safety) return this.safety.chat(socket, d);
+    return this.postChat(socket, d);
+  }
+
+  postChat(socket, d) {
     const c = this.ctx(socket);
     if (!c) return fail('Bir odada değilsin.');
     const text = cleanText(d.text);
@@ -1006,7 +1021,8 @@ class RoomManager {
     if (now - c.member.lastChat < CHAT_GAP_MS) return fail('Çok hızlı mesaj gönderiyorsun.');
     c.member.lastChat = now;
     c.room.touch();
-    c.room.pushChat({ author: c.member.name, text, time: now });
+    c.room.pushChat({ id: crypto.randomUUID(), senderAccountId: c.member.accountId ?? null,
+      seat: c.member.seat, author: c.member.name, text, time: now });
     return ok('Gönderildi.');
   }
 

@@ -3,6 +3,7 @@ const { randomBytes, randomInt, randomUUID, createHash, createHmac, scrypt, timi
 const { promisify } = require('node:util');
 const { PostgresDatabase } = require('./wallet_database');
 const { ENTRY_CARROTS } = require('./wallet');
+const { offensive } = require('./community_safety');
 
 const derive = promisify(scrypt);
 const hashToken = (token) => createHash('sha256').update(token).digest('hex');
@@ -69,6 +70,7 @@ class PostgresWallet {
     `);
     await this.db.exec(require('./management_schema').replace('bunny_manager_email_hash(email)', "encode(sha256(convert_to(email, 'UTF8')), 'hex')"));
     await this.db.exec(require('./market_schema'));
+    await this.db.exec(require('./community_schema'));
   }
 
   async credit(db, id, ref, amount, reason) {
@@ -133,6 +135,7 @@ class PostgresWallet {
     if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('Geçerli bir e-posta gir.');
     if (typeof password !== 'string' || password.length < 8 || password.length > 128) return fail('Şifre 8–128 karakter olmalı.');
     if (!name || name.length > 14 || /[\u0000-\u001f\u007f]/.test(name)) return fail('Oyuncu adı 1–14 karakter olmalı.');
+    if (offensive(name)) return fail('Uygun bir oyuncu adı seç.');
     const id = randomUUID();
     const salt = randomBytes(16).toString('hex');
     const hash = (await derive(password, salt, 64)).toString('hex');

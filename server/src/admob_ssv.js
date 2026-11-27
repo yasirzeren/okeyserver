@@ -76,6 +76,7 @@ class AdmobVerifier {
 
 function createAdmobHandler(market, verifier = new AdmobVerifier(), setupVerifier = new AdmobVerifier({ setup: true })) {
   let nextSetupWarningAt = 0;
+  let nextSetupSuccessAt = 0;
   return async (req, res) => {
     if (req.url?.split('?')[0] !== '/admob/ssv') return false;
     const reply = (status, body) => {
@@ -98,6 +99,10 @@ function createAdmobHandler(market, verifier = new AdmobVerifier(), setupVerifie
       // A console connectivity check must still carry a valid Google signature.
       // Acknowledge it without entering the economy or granting any reward.
       if (signed.offerId === SETUP_CHECK) {
+        if (Date.now() >= nextSetupSuccessAt) {
+          nextSetupSuccessAt = Date.now() + 60000;
+          console.info('AdMob SSV setup verified');
+        }
         reply(200, { ok: true, verificationOnly: true }); return true;
       }
       if (!market?.configured) { reply(503, { ok: false }); return true; }
