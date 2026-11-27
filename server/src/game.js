@@ -402,14 +402,15 @@ class Game {
         this.turnAdjustMs += OPEN_BONUS_MS;
       }
     } else {
-      if (e.pairs) pl.pairCount += e.groups.length;
+      const openingPairs = this.pendingOpen && e.pairs ? e.groups.length : 0;
+      pl.pairCount += openingPairs;
       const openingPoints = this.pendingOpen && !e.pairs ? e.points : 0;
       pl.openPoints += openingPoints;
       this.undo.push({
         kind: 'extra',
         tiles: used,
         meldIds: ids,
-        pairs: e.pairs ? e.groups.length : 0,
+        pairs: openingPairs,
         openingPoints,
       });
       this.say(`${pl.name} yeni grup açtı.`);
@@ -490,7 +491,10 @@ class Game {
       const penalty = this.applyWrongOpenPenalty(p);
       return ' Açılış taşları ıstakaya döndü.' + (penalty ? ' ' + penalty : '');
     }
-    if (!this.pendPairs) {
+    if (this.pendPairs) {
+      this.maxPairOpen = Math.max(this.maxPairOpen, player.pairCount);
+      this.pairOpenBy[p] = player.pairCount;
+    } else {
       this.maxSeriesOpen = Math.max(this.maxSeriesOpen, player.openPoints);
       this.seriesOpenBy[p] = player.openPoints;
     }
