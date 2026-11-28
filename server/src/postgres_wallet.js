@@ -230,14 +230,19 @@ class PostgresWallet {
     if (!id) return fail('Oturum açman gerekiyor.');
     const cutoff = latestRewardTime(now);
     await this.grantDaily(now);
-    const profile = await this.profile(id);
-    const contact = await this.db.get('SELECT email FROM accounts WHERE id = ?', id);
-    const isAdmin = await this.isAdmin(id);
-    const pendingDaily = Number((await this.db.get(
-      'SELECT COUNT(*) AS count FROM movements WHERE account_id = ? AND ref = ? AND amount = 0',
-      id, 'daily:' + cutoff)).count);
-    return { ok: true, profile: { ...profile, email: contact.email, isAdmin, isManager: await this.isManager(id) },
-      pendingDaily, dailyCutoff: cutoff };
+    const row = await this.db.get(`
+      SELECT a.id, a.name, a.carrots, a.email, pc.code AS player_code,
+        EXISTS(SELECT 1 FROM managers m WHERE m.account_id = a.id) AS is_manager,
+        EXISTS(SELECT 1 FROM admins ad WHERE ad.account_id = a.id) AS is_carrot_admin,
+        (SELECT COUNT(*) FROM movements mv WHERE mv.account_id = a.id AND mv.ref = ? AND mv.amount = 0) AS pending_daily
+      FROM accounts a LEFT JOIN player_codes pc ON pc.account_id = a.id WHERE a.id = ?`, 'daily:' + cutoff, id);
+    if (!row) return fail('Oturum açman gerekiyor.');
+    const profile = row.player_code
+      ? { id: row.id, name: row.name, carrots: Number(row.carrots), playerCode: row.player_code }
+      : await this.profile(id);
+    return { ok: true, profile: { ...profile, email: row.email,
+      isAdmin: row.is_manager || row.is_carrot_admin, isManager: row.is_manager },
+      pendingDaily: Number(row.pending_daily), dailyCutoff: cutoff };
   }
   async activity(token) {
     const id = await this.authenticate(token);
@@ -335,8 +340,11 @@ class PostgresWallet {
       const cost = stake === null ? ENTRY_CARROTS : stake + stake / 20;
       const sorted = [...ids].sort();
       const insufficient = [];
+      // Lock the same ordered roster in one query; no profile/code lookups are needed for a debit.
+      const locked = await db.all('SELECT id, carrots FROM accounts WHERE id IN (?, ?, ?, ?) ORDER BY id' + db.lock, ...sorted);
+      const balances = new Map(locked.map(row => [row.id, Number(row.carrots)]));
       for (const id of sorted) {
-        const balance = (await this.profile(id, db, true))?.carrots ?? 0;
+        const balance = balances.get(id) ?? 0;
         if (balance < cost) insufficient.push({ id, balance });
       }
       if (insufficient.length) return { ...fail('Bazı oyuncuların havucu yetersiz.'), insufficient };
